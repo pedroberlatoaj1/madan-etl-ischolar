@@ -1,0 +1,17 @@
+{
+  "_schema": "mapa_professores_v1",
+  "_descricao": "Mapa de frente_professor (planilha Madan) para IDs de professor do iScholar. Somente necessário se a escola exigir id_professor no lançamento.",
+  "_instrucoes": [
+    "Chaves: valor do campo 'frente_professor' da planilha Madan, sem acentos, em minúsculas.",
+    "Valores: id_professor inteiro obtido do iScholar.",
+    "Se professor_obrigatorio=False no resolvedor, este arquivo é opcional.",
+    "Se professor_obrigatorio=True, todo lançamento com frente_professor presente deve ter entrada aqui."
+  ],
+  "professores": {
+    "matematica - prof silva": 301,
+    "matematica - profa souza": 302,
+    "portugues - profa lima": 303,
+    "historia - prof costa": 304,
+    "biologia - profa ferreira": 305
+  }
+}

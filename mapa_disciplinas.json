@@ -1,0 +1,28 @@
+{
+  "_schema": "mapa_disciplinas_v1",
+  "_descricao": "Mapa de disciplinas da planilha Madan para IDs do iScholar. Edite manualmente com os IDs reais confirmados pelo suporte ou pela interface do iScholar.",
+  "_instrucoes": [
+    "Chaves: nome da disciplina exatamente como aparece na planilha Madan, sem acentos, em minúsculas.",
+    "Valores: id_disciplina inteiro obtido do iScholar.",
+    "Para adicionar variações de nome (ex: 'mat', 'matematica', 'matemática'), adicione múltiplas chaves apontando para o mesmo id.",
+    "Recarregar o resolvedor após editar este arquivo."
+  ],
+  "disciplinas": {
+    "matematica": 101,
+    "mat": 101,
+    "portugues": 102,
+    "lingua portuguesa": 102,
+    "historia": 103,
+    "ed fisica": 104,
+    "educacao fisica": 104,
+    "ciencias": 105,
+    "biologia": 106,
+    "fisica": 107,
+    "quimica": 108,
+    "geografia": 109,
+    "ingles": 110,
+    "lingua inglesa": 110,
+    "arte": 111,
+    "artes": 111
+  }
+}

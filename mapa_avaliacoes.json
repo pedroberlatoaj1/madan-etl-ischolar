@@ -1,0 +1,69 @@
+{
+  "_schema": "mapa_avaliacoes_v1",
+  "_descricao": "Mapa de componentes avaliativos para IDs de avaliação do iScholar. Edite com os IDs reais obtidos do iScholar.",
+  "_instrucoes": [
+    "Cada entrada define: componente (obrigatório) + trimestre (opcional) → id_avaliacao.",
+    "Lookup progressivo: tenta componente+trimestre primeiro; se não achar, tenta componente sem trimestre.",
+    "Se o iScholar usa o mesmo id_avaliacao para todos os trimestres de um componente, omita o campo 'trimestre'.",
+    "Se o iScholar usa ids diferentes por trimestre, inclua uma entrada por combinação.",
+    "Componentes canônicos: av1, av2, av3, simulado, recuperacao.",
+    "Trimestre: string, ex: '1', '2', '3'."
+  ],
+  "avaliacoes": [
+    {
+      "_comentario": "AV1 com id distinto por trimestre",
+      "componente": "av1",
+      "trimestre": "1",
+      "id_avaliacao": 201
+    },
+    {
+      "componente": "av1",
+      "trimestre": "2",
+      "id_avaliacao": 202
+    },
+    {
+      "componente": "av1",
+      "trimestre": "3",
+      "id_avaliacao": 203
+    },
+    {
+      "componente": "av2",
+      "trimestre": "1",
+      "id_avaliacao": 211
+    },
+    {
+      "componente": "av2",
+      "trimestre": "2",
+      "id_avaliacao": 212
+    },
+    {
+      "componente": "av2",
+      "trimestre": "3",
+      "id_avaliacao": 213
+    },
+    {
+      "componente": "av3",
+      "trimestre": "1",
+      "id_avaliacao": 221
+    },
+    {
+      "componente": "av3",
+      "trimestre": "2",
+      "id_avaliacao": 222
+    },
+    {
+      "componente": "av3",
+      "trimestre": "3",
+      "id_avaliacao": 223
+    },
+    {
+      "_comentario": "Simulado sem distinção de trimestre (mesmo id para todos)",
+      "componente": "simulado",
+      "id_avaliacao": 230
+    },
+    {
+      "componente": "recuperacao",
+      "id_avaliacao": 240
+    }
+  ]
+}

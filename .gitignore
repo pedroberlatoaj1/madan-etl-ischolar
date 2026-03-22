@@ -1,0 +1,18 @@
+# Senhas e variáveis de ambiente
+.env
+
+# Bancos de dados locais (evita subir dados reais ou de testes)
+*.db
+*.sqlite3
+
+# Logs
+*.log
+
+# Arquivos temporários e de cache do Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Planilhas com dados reais (se quiser subir só o modelo, deixe as com dados fora)
+tmp_*.csv
+*com_erros*.xlsx

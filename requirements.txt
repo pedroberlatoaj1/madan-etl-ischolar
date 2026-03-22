@@ -1,0 +1,27 @@
+# Pipeline ETL de Notas → iScholar
+# Instale: pip install -r requirements.txt
+# Faixas estáveis (>=min,<next_major) para previsibilidade.
+
+# Monitoramento de arquivos (Cenário A — pasta local)
+watchdog>=4.0,<5
+
+# Leitura de planilhas
+pandas>=2.0,<3
+openpyxl>=3.1,<4
+xlrd>=2.0,<3
+
+# Cliente HTTP (retry, backoff)
+requests>=2.31,<3
+urllib3>=2.0,<3
+
+# Webhook (Cenário B — Google Sheets)
+flask>=3.0,<4
+waitress>=3.0,<4
+
+# Variáveis de ambiente (recomendado em produção)
+python-dotenv>=1.0,<2
+
+# Testes
+pytest>=8.0,<9
+
+# Nota: SQLite (job_store) usa sqlite3 da biblioteca padrão — sem dependência extra.
