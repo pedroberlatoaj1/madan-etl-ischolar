@@ -117,9 +117,16 @@ def test_ra_ausente_na_linha_resulta_em_none_no_contexto():
 def test_validar_colunas_obrigatorias_template_completo():
     """Template com todas as colunas obrigatórias não retorna ausentes."""
     cols = ["Estudante", "RA", "Turma", "Trimestre", "Disciplina",
-            "AV 1 (OBJ)", "AV 1 (DISC)", "Simulado"]
+            "Frente - Professor", "AV 1 (OBJ)", "AV 1 (DISC)", "Simulado"]
     ausentes = m.validar_colunas_obrigatorias_template(cols)
     assert ausentes == []
+
+
+def test_validar_colunas_obrigatorias_template_frente_ausente():
+    """Template sem coluna Frente - Professor deve retornar 'frente_professor' como ausente."""
+    cols = ["Estudante", "RA", "Turma", "Trimestre", "Disciplina", "AV 1 (OBJ)"]
+    ausentes = m.validar_colunas_obrigatorias_template(cols)
+    assert m.CAN_FRENTE_PROFESSOR in ausentes
 
 
 def test_validar_colunas_obrigatorias_template_ra_ausente():
