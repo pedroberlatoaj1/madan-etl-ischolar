@@ -45,6 +45,15 @@ from madan_planilha_mapper import (
 
 
 # ---------------------------------------------------------------------------
+# Constantes de status_geral
+# ---------------------------------------------------------------------------
+
+STATUS_APROVADO       = "apto_para_aprovacao"
+STATUS_COM_AVISOS     = "apto_com_avisos"
+STATUS_BLOQUEADO_ERROS = "bloqueado_por_erros"
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -486,4 +495,51 @@ def validar_pre_envio_linha(
     }
 
 
-__all__ = ["validar_pre_envio_linha", "Issue", "ComparacaoTotal"]
+def criar_resultado_falha_linha(
+    *,
+    linha_origem: int,
+    estudante: str,
+    componente: str,
+    mensagem_erro: str,
+) -> dict[str, Any]:
+    """
+    Constrói um resultado pré-envio de falha interna para linhas que não
+    puderam ser processadas (erro na transformação ou validação).
+
+    Preserva auditabilidade no relatório do lote com o mesmo schema de
+    ``validar_pre_envio_linha``.
+    """
+    lancamento_falha: dict[str, Any] = {
+        "estudante":       estudante,
+        "componente":      componente,
+        "linha_origem":    linha_origem,
+        "validacao_erros": [
+            {
+                "severity": "erro",
+                "code":     "ERRO_INTERNO_PROCESSAMENTO",
+                "message":  mensagem_erro,
+                "bloqueante": True,
+            }
+        ],
+        "sendavel": False,
+    }
+    return {
+        "lancamentos_validos":  [],
+        "lancamentos_com_erro": [lancamento_falha],
+        "avisos":               [],
+        "pendencias":           [],
+        "duplicidades":         [],
+        "comparacoes_totais":   [],
+        "status_geral":         STATUS_BLOQUEADO_ERROS,
+    }
+
+
+__all__ = [
+    "validar_pre_envio_linha",
+    "criar_resultado_falha_linha",
+    "Issue",
+    "ComparacaoTotal",
+    "STATUS_APROVADO",
+    "STATUS_COM_AVISOS",
+    "STATUS_BLOQUEADO_ERROS",
+]
