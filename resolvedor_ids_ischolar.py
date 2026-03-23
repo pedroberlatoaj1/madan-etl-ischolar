@@ -458,7 +458,14 @@ class ResolvedorIDsHibrido(ResolvedorIDsAbstrato):
         self._cliente              = cliente
         self._mapa_disciplinas     = mapa_disciplinas
         self._mapa_avaliacoes      = mapa_avaliacoes
-        self._mapa_professores     = mapa_professores or {}
+        # Normaliza as chaves do mapa de professores no construtor para garantir
+        # consistência independente da origem (arquivo via carregar_mapa_professores
+        # ou injeção programática direta). A operação é idempotente: chaves já
+        # normalizadas não são afetadas.
+        self._mapa_professores     = {
+            _normalizar_chave(k): v
+            for k, v in (mapa_professores or {}).items()
+        }
         self._professor_obrigatorio = professor_obrigatorio
 
     def resolver_ids(self, lancamento: Mapping[str, Any]) -> ResultadoResolucaoIDs:

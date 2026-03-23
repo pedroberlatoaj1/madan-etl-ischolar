@@ -569,6 +569,25 @@ def test_professor_obrigatorio_com_mapeamento_resolve():
     assert "professor_sem_mapeamento" not in resultado.rastreabilidade["categorias_erro"]
 
 
+def test_professor_mapa_injetado_com_chave_bruta_resolve():
+    """
+    Mapa injetado programaticamente com chaves não-normalizadas (hífens, acentos)
+    deve resolver igual a um mapa carregado via carregar_mapa_professores.
+
+    Garante que ResolvedorIDsHibrido.__init__ normaliza internamente,
+    independente da origem do mapa.
+    """
+    r, _ = _resolvedor(
+        mapa_prof={"Matemática - Prof Silva": 301},  # chave bruta, não normalizada
+        professor_obrigatorio=False,
+    )
+    resultado = r.resolver_ids(_lancamento(frente_professor="Matemática - Prof Silva"))
+
+    assert resultado.id_professor == 301
+    assert resultado.rastreabilidade["fonte_resolucao"]["id_professor"] == \
+        "de_para_local:mapa_professores"
+
+
 # ---------------------------------------------------------------------------
 # 10. Fluxo de envio novo usando resolvedor híbrido em dry_run
 # ---------------------------------------------------------------------------
