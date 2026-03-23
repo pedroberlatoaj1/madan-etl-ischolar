@@ -1,24 +1,36 @@
 """
 ischolar_client.py — Cliente HTTP para a API do ERP iScholar.
 
-Este arquivo mantém DOIS caminhos:
+Este arquivo mantém DOIS caminhos. Código novo deve usar EXCLUSIVAMENTE o
+fluxo oficial. O fluxo legado existe apenas para compatibilidade do worker
+antigo e não deve ser estendido.
 
-1) Fluxo oficial (contrato iScholar confirmado pelo suporte)
-   - Busca/resolve:
-     - `buscar_aluno` → `GET /aluno/busca`
-     - `listar_matriculas` → `GET /matricula/listar`
-   - Auditoria:
-     - `listar_notas` → `GET /diario/notas`
-   - Lançamento de nota idempotente:
-     - `lancar_nota` → `POST /notas/lanca_nota`
+══════════════════════════════════════════════════════════════════
+FLUXO OFICIAL (novo) — USE ESTE em código novo
+══════════════════════════════════════════════════════════════════
+Endpoints confirmados pelo suporte técnico iScholar:
 
-2) Fluxo legado (compatibilidade temporária)
-   - `consultar_notas` (GET /diario/notas)
-   - `criar_nota` (POST /diario/notas)
-   - `sync_notas_idempotente` / `enviar_notas`
+  Resolução de IDs:
+    buscar_aluno       → GET  /aluno/busca
+    listar_matriculas  → GET  /matricula/listar
 
-O worker ainda pode chamar o fluxo legado. O fluxo oficial novo fica disponível
-por métodos específicos, sem refatorar fila/worker.
+  Auditoria:
+    listar_notas       → GET  /diario/notas
+
+  Lançamento (idempotente):
+    lancar_nota        → POST /notas/lanca_nota
+
+══════════════════════════════════════════════════════════════════
+FLUXO LEGADO — NÃO usar em código novo
+══════════════════════════════════════════════════════════════════
+Mantido apenas para o worker existente. Não será expandido.
+
+  consultar_notas         → GET  /diario/notas   (wrapper legado)
+  criar_nota              → POST /diario/notas   (endpoint diferente do oficial)
+  sync_notas_idempotente  → GET+POST combinado   (lógica própria do worker)
+  enviar_notas            → wrapper de sync_notas_idempotente
+  get_client              → singleton para o worker legado
+  enviar_notas_para_ischolar → entrada do pipeline legado
 """
 
 from __future__ import annotations
@@ -325,7 +337,8 @@ class IScholarClient:
         return None
 
     # -----------------------------------------------------------------------
-    # Métodos do contrato oficial (API pública iScholar)
+    # FLUXO OFICIAL (novo) — endpoints confirmados pelo suporte iScholar
+    # Use estes métodos em todo código novo.
     # -----------------------------------------------------------------------
 
     def buscar_aluno(
@@ -336,14 +349,18 @@ class IScholarClient:
         cpf: Optional[str] = None,
     ) -> ResultadoBuscaAluno:
         """
-        GET /aluno/busca
+        [FLUXO OFICIAL] GET /aluno/busca
+
+        Passo 1 da resolução de matrícula. Retorna id_aluno a partir de um
+        identificador único do aluno.
 
         A API aceita UM, e apenas um, dos identificadores abaixo:
           - `id_aluno` (inteiro)
-          - `numero_re` (texto) (no projeto usamos como RA)
+          - `numero_re` (texto) — no projeto mapeado a partir do campo RA
           - `cpf` (texto)
 
         Nenhum identificador válido informado → levanta `ValueError`.
+        Usar em conjunto com `listar_matriculas` para obter id_matricula.
         """
         endpoint = f"{self.base_url}/aluno/busca"
 
@@ -444,9 +461,13 @@ class IScholarClient:
         resolver_id_matricula: bool = True,
     ) -> ResultadoListagemMatriculas:
         """
-        GET /matricula/listar
+        [FLUXO OFICIAL] GET /matricula/listar
 
-        Permite resolver `id_matricula` a partir de uma listagem retornada pela API.
+        Passo 2 da resolução de matrícula. Retorna id_matricula a partir do
+        id_aluno obtido via `buscar_aluno`.
+
+        Com `resolver_id_matricula=True` (padrão), retorna o id_matricula
+        inequívoco ou erro explícito se houver ambiguidade.
         """
         endpoint = f"{self.base_url}/matricula/listar"
         params: dict[str, Any] = {"id_aluno": self._coerce_int_strict(id_aluno, "id_aluno"), "pagina": int(pagina)}
@@ -595,7 +616,13 @@ class IScholarClient:
         tipo: str = "nota",
     ) -> ResultadoListagemNotas:
         """
-        GET /diario/notas?id_matricula={{id_matricula}}&identificacao={{identificacao}}&tipo={{tipo}}
+        [FLUXO OFICIAL] GET /diario/notas — auditoria e reconciliação.
+
+        Consulta notas já lançadas para uma matrícula. Usar para verificar
+        o estado atual antes/após `lancar_nota`, não como parte do loop
+        de envio principal.
+
+        GET /diario/notas?id_matricula=…&identificacao=…&tipo=…
         """
         endpoint = f"{self.base_url}/diario/notas"
         params: dict[str, Any] = {
@@ -677,19 +704,21 @@ class IScholarClient:
         dry_run: bool = False,
     ) -> ResultadoLancamentoNota:
         """
-        POST /notas/lanca_nota
+        [FLUXO OFICIAL] POST /notas/lanca_nota — lançamento principal.
 
-        Payload fiel ao contrato oficial (suporte técnico):
+        Ponto de envio do fluxo oficial novo. Payload confirmado pelo suporte:
           {
             "id_matricula": INT,
             "id_disciplina": INT,
             "id_avaliacao": INT,
             "id_professor": INT (opcional),
-            "valor": NUMERIC  # nota bruta
+            "valor": NUMERIC  # nota bruta (0-10, 2 casas decimais)
           }
 
-        O POST é idempotente (cria/substitui). Portanto, o client NÃO faz deduplicação
-        prévia do POST (sem GET de reconciliação antes).
+        O endpoint é idempotente (cria ou substitui). O client NÃO faz GET
+        de reconciliação prévia — a idempotência é garantida pelo servidor.
+        Usar em conjunto com `buscar_aluno` + `listar_matriculas` para
+        resolver id_matricula antes de chamar este método.
         """
         endpoint = f"{self.base_url}/notas/lanca_nota"
 
@@ -874,12 +903,17 @@ class IScholarClient:
                 rastreabilidade=rast,
             )
 
-    # --- Helpers de Sincronização Idempotente ---
+    # -----------------------------------------------------------------------
+    # FLUXO LEGADO — NÃO usar em código novo
+    # Mantido apenas para compatibilidade do worker existente.
+    # Não deve ser estendido. Candidato a remoção quando o worker for migrado.
+    # -----------------------------------------------------------------------
 
     def _indexar_avaliacoes_existentes(self, dados: Any) -> dict[int, dict]:
         """
-        Percorre recursivamente a resposta JSON (listas e dicts) e indexa objetos
-        de avaliação pela chave 'identificacao' (convertida para int).
+        [LEGADO] Percorre recursivamente a resposta JSON (listas e dicts) e
+        indexa objetos de avaliação pela chave 'identificacao' (int).
+        Usado exclusivamente por `sync_notas_idempotente`.
         """
         indice: dict[int, dict] = {}
 
@@ -904,8 +938,9 @@ class IScholarClient:
 
     def _comparar_avaliacao_existente_com_payload(self, avaliacao_existente: Optional[dict], row_payload: dict) -> str:
         """
-        Compara o valor da nota existente com a nova nota do payload.
+        [LEGADO] Compara nota existente com a nova nota do payload.
         Retorna: 'create', 'skip' ou 'conflict'.
+        Usado exclusivamente por `sync_notas_idempotente`.
         """
         if not avaliacao_existente:
             return "create"
@@ -923,10 +958,13 @@ class IScholarClient:
             # Se a conversão falhar de algum dos lados, sinaliza conflito
             return "conflict"
 
-    # --- Métodos de API ---
-
     def consultar_notas(self, id_matricula: int) -> ResultadoEnvio:
-        """GET /diario/notas?id_matricula={{id_matricula}}"""
+        """
+        [LEGADO] GET /diario/notas?id_matricula=…
+
+        Wrapper do fluxo legado. Não usar em código novo — usar `listar_notas`
+        (fluxo oficial) para consultas de auditoria.
+        """
         try:
             v_id = self._coerce_int_strict(id_matricula, "id_matricula")
             url = f"{self.base_url}/diario/notas"
@@ -946,16 +984,22 @@ class IScholarClient:
             return self._tratar_excecao(exc)
 
     def criar_nota(
-        self, 
-        *, 
-        id_matricula: int, 
-        identificacao: int, 
-        valor: float, 
-        tipo: str = "nota", 
-        data_lancamento: str, 
+        self,
+        *,
+        id_matricula: int,
+        identificacao: int,
+        valor: float,
+        tipo: str = "nota",
+        data_lancamento: str,
         observacao: Optional[str] = None
     ) -> ResultadoEnvio:
-        """POST /diario/notas - Envio individual com validação rígida de tipos."""
+        """
+        [LEGADO] POST /diario/notas — envio individual pelo fluxo legado.
+
+        Endpoint diferente do fluxo oficial (POST /notas/lanca_nota).
+        Não usar em código novo — usar `lancar_nota` (fluxo oficial).
+        Chamado exclusivamente por `sync_notas_idempotente`.
+        """
         url = f"{self.base_url}/diario/notas"
         
         try:
@@ -977,8 +1021,10 @@ class IScholarClient:
 
     def enviar_notas(self, df: pd.DataFrame, job_id: Optional[int] = None, **kwargs) -> ResultadoEnvio:
         """
-        Wrapper legado que delega o processamento para a sync idempotente.
-        Retorna um ResultadoEnvio compatível com o loop do worker antigo.
+        [LEGADO] Wrapper que delega para `sync_notas_idempotente`.
+
+        Retorna ResultadoEnvio compatível com o loop do worker antigo.
+        Não usar em código novo — o fluxo oficial usa `lancar_nota` por item.
         """
         resultado_sync = self.sync_notas_idempotente(df, job_id=job_id, **kwargs)
 
@@ -1007,8 +1053,12 @@ class IScholarClient:
 
     def sync_notas_idempotente(self, df: pd.DataFrame, job_id: Optional[int] = None, **kwargs) -> ResultadoSyncNotas:
         """
-        Sincroniza notas de forma idempotente, processando por matrícula para evitar chamadas GET duplicadas
-        e pulando avaliações idênticas já existentes.
+        [LEGADO] Sincroniza notas via GET+POST pelo endpoint /diario/notas.
+
+        Lógica própria do worker antigo: agrupa por matrícula, consulta estado
+        existente e decide entre criar/pular/registrar conflito.
+        Não usar em código novo — o fluxo oficial gerencia idempotência via
+        `lancar_nota` (POST /notas/lanca_nota é idempotente por contrato).
         """
         colunas_necessarias = {"id_matricula", "identificacao", "valor", "data_lancamento"}
         faltantes = colunas_necessarias - set(df.columns)
@@ -1116,7 +1166,7 @@ class IScholarClient:
         )
         return resultado
 
-    def _processar_resposta(self, resp: requests.Response) -> ResultadoEnvio:
+    def _processar_resposta(self, resp: requests.Response) -> ResultadoEnvio:  # [LEGADO]
         if resp.status_code in (200, 201):
             return ResultadoEnvio(sucesso=True, status_code=resp.status_code)
         
@@ -1131,21 +1181,29 @@ class IScholarClient:
         log.warning("⚠️ %s", msg)
         return ResultadoEnvio(sucesso=False, status_code=resp.status_code, transitorio=True, mensagem=msg)
 
-    def _tratar_excecao(self, exc: Exception) -> ResultadoEnvio:
+    def _tratar_excecao(self, exc: Exception) -> ResultadoEnvio:  # [LEGADO]
         is_transiente = isinstance(exc, (requests.Timeout, requests.ConnectionError))
         log.error("🚨 Falha %s: %s", "Transitória" if is_transiente else "Permanente", exc)
         return ResultadoEnvio(sucesso=False, transitorio=is_transiente, mensagem=str(exc))
 
 
-# Singleton
+# ---------------------------------------------------------------------------
+# LEGADO — singleton e entrada do pipeline antigo
+# Não usar em código novo.
+# ---------------------------------------------------------------------------
+
 _cliente_padrao: Optional[IScholarClient] = None
 
+
 def get_client() -> IScholarClient:
+    """[LEGADO] Singleton de IScholarClient para o worker existente."""
     global _cliente_padrao
     if _cliente_padrao is None:
         _cliente_padrao = IScholarClient()
     return _cliente_padrao
 
+
 def enviar_notas_para_ischolar(df: pd.DataFrame, job_id: Optional[int] = None, **kwargs) -> bool:
+    """[LEGADO] Entrada do pipeline antigo. Delega para get_client().enviar_notas()."""
     resultado = get_client().enviar_notas(df, job_id=job_id, **kwargs)
     return resultado.sucesso
