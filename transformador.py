@@ -79,6 +79,7 @@ def linha_madan_para_lancamentos(
         CAN_NOTA_SEM_AV3,
         CAN_OBS_PONTO_EXTRA,
         CAN_PONTO_EXTRA,
+        CAN_RA,
         CAN_RECUPERACAO,
         CAN_SIMULADO,
         CAN_TRIMESTRE,
@@ -89,6 +90,7 @@ def linha_madan_para_lancamentos(
     canon = linha_wide_para_canonica(row)
     ctx = {
         "estudante": canon.contexto.get(CAN_ESTUDANTE),
+        "ra": canon.contexto.get(CAN_RA),
         "turma": canon.contexto.get(CAN_TURMA),
         "disciplina": canon.contexto.get(CAN_DISCIPLINA),
         "frente_professor": canon.contexto.get(CAN_FRENTE_PROFESSOR),
