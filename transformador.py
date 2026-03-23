@@ -642,25 +642,23 @@ def _coerce_float_column(df: pd.DataFrame, col: str) -> pd.DataFrame:
 
 def _coerce_iso_date_column(df: pd.DataFrame, col: str) -> pd.DataFrame:
     """
-    Converte strings de data (ex: 16/03/2026) para formato ISO (YYYY-MM-DD).
+    Converte strings de data para formato ISO (YYYY-MM-DD).
 
-    Estratégia em duas tentativas sem .loc assignment (evita FutureWarning de
-    Copy-on-Write no pandas 2.x):
-      1. Tenta formato BR (dayfirst=True) sobre a coluna completa.
-      2. Para as entradas que não parsearam (NaT), tenta formato ISO (dayfirst=False).
-      3. Consolida com pd.concat e descarta as que permanecerem NaT.
+    Estratégia em duas tentativas, ambas com formato explícito (sem dayfirst):
+      1. Formato BR  : %d/%m/%Y   ex: 16/03/2026
+      2. Formato ISO : %Y-%m-%d   ex: 2026-03-16
+    Entradas que não parseiam em nenhum dos dois formatos são descartadas.
     """
     tamanho_inicial = len(df)
 
-    parsed_br  = pd.to_datetime(df[col], errors="coerce", dayfirst=True)
-    mask_nat   = parsed_br.isna()
+    # Tentativa 1: formato BR explícito
+    parsed = pd.to_datetime(df[col], errors="coerce", format="%d/%m/%Y")
+    mask_nat = parsed.isna()
 
     if mask_nat.any():
-        parsed_iso = pd.to_datetime(df.loc[mask_nat, col], errors="coerce", dayfirst=False)
-        # Combina sem .loc assignment: BR onde resolveu, ISO onde não resolveu
-        parsed = pd.concat([parsed_br[~mask_nat], parsed_iso]).reindex(df.index)
-    else:
-        parsed = parsed_br
+        # Tentativa 2: formato ISO explícito para as entradas ainda NaT
+        parsed_iso = pd.to_datetime(df.loc[mask_nat, col], errors="coerce", format="%Y-%m-%d")
+        parsed = pd.concat([parsed[~mask_nat], parsed_iso]).reindex(df.index)
 
     df = df.assign(**{col: parsed})
     df = df.dropna(subset=[col])
