@@ -169,8 +169,8 @@ MAPA_AVAL = [
 ]
 
 MAPA_PROF = {
-    "matematica - prof silva": 301,
-    "portugues - profa lima":  302,
+    "matematica prof silva": 301,   # normalized: hyphens removed by _normalizar_chave
+    "portugues profa lima":  302,   # matches _normalizar_chave("Português - Profa Lima")
 }
 
 
@@ -776,7 +776,9 @@ def test_carregar_mapa_professores_do_arquivo(tmp_path):
 
     from resolvedor_ids_ischolar import carregar_mapa_professores
     mapa = carregar_mapa_professores(arq)
-    assert mapa["mat - prof silva"] == 301
+    # carregar_mapa_professores normaliza as chaves via _normalizar_chave:
+    # "mat - prof silva" → hyphen vira espaço → "mat prof silva"
+    assert mapa["mat prof silva"] == 301
 
 
 # ---------------------------------------------------------------------------
@@ -944,7 +946,7 @@ def test_integracao_resolvedor_client_lancamento_completo():
         listagem=listagem_ok,
         mapa_disc={"lingua portuguesa": 102},
         mapa_aval=[{"componente": "av2", "trimestre": "2", "id_avaliacao": 212}],
-        mapa_prof={"portugues - profa lima": 302},
+        mapa_prof={"portugues profa lima": 302},  # normalized key
         professor_obrigatorio=False,
     )
 

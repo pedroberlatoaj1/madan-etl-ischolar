@@ -314,10 +314,9 @@ def _extrair_identificador_aluno(
     Campos esperados: `ra`, `numero_re`, `cpf`, `id_aluno`.
     Retorna (ra, cpf, id_aluno) — qualquer um pode ser None.
 
-    NOTA: Os campos `ra`/`cpf`/`id_aluno` NÃO fazem parte do schema canônico
-    Madan atual (madan_planilha_mapper.py). Eles precisam ser injetados
-    externamente (coluna adicional na planilha, enriquecimento pré-aprovação,
-    ou campo no lançamento pelo operador). Sem eles, a resolução via API
+    NOTA: O campo `ra` faz parte do schema canônico desde o patch de propagação
+    de RA (transformador.py). Os campos `cpf` e `id_aluno` podem ser injetados
+    externamente se disponíveis. Sem ao menos um deles, a resolução via API
     retorna `identificador_aluno_insuficiente`.
     """
     ra: Optional[str] = None
