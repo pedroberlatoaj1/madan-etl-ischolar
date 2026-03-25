@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/test_cli_envio.py -q)",
+      "Bash(python -m pytest -q)",
+      "Bash(python -m pytest tests/test_resolvedor_ids_ischolar.py -q)",
+      "Bash(python -m pytest tests/test_madan_planilha_mapper.py tests/test_cli_envio.py -q)"
+    ]
+  }
+}
