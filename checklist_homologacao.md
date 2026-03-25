@@ -17,11 +17,21 @@ Ele serve tanto como **checklist de smoke test local** quanto como **guia de go/
 ### 1.1 Instalação e configuração
 
 - [ ] Projeto instalado e dependências Python satisfeitas
-- [ ] Arquivo `.env` presente com `ISCHOLAR_API_TOKEN` e `ISCHOLAR_CODIGO_ESCOLA` preenchidos **🔴 BLOQUEANTE**
+- [ ] Arquivo `.env` criado a partir de `.env.example` **🔴 BLOQUEANTE**
+- [ ] `ISCHOLAR_API_TOKEN` preenchido no `.env` (gerar em https://madan_homolog.ischolar.com.br/) **🔴 BLOQUEANTE**
+- [ ] `ISCHOLAR_CODIGO_ESCOLA` preenchido no `.env` — homologação: `madan_homolog` **🔴 BLOQUEANTE**
+- [ ] `ISCHOLAR_BASE_URL` confirmada: `https://api.ischolar.app` (mesma para homologação e produção)
 - [ ] `mapa_disciplinas.json` presente e preenchido com IDs reais **🔴 BLOQUEANTE**
 - [ ] `mapa_avaliacoes.json` presente e preenchido com IDs reais **🔴 BLOQUEANTE**
 - [ ] `mapa_professores.json` presente se a escola exigir professor no lançamento **🔴 BLOQUEANTE (condicional)**
 - [ ] Ambiente configurado corretamente: homologação **ou** produção — nunca ambos ao mesmo tempo
+
+> **Informações confirmadas pelo TI do iScholar (março/2026):**
+> - URL da API: mesma para homologação e produção
+> - `X-Codigo-Escola` homologação: `madan_homolog`
+> - Interface web de homologação: https://madan_homolog.ischolar.com.br/
+> - Sem diferenças relevantes entre ambientes além do código da escola
+> - Token: gerar seguindo https://ajuda.ischolar.com.br/pt-BR/articles/5680701-acessando-a-api-do-ischolar
 
 ### 1.2 Template da planilha
 
@@ -35,6 +45,48 @@ Ele serve tanto como **checklist de smoke test local** quanto como **guia de go/
 - [ ] Nenhuma coluna obrigatória renomeada ou removida
 - [ ] Notas entre 0 e 10 (célula vazia = não se aplica, zero = nota real)
 - [ ] Uma linha por aluno por disciplina
+
+---
+
+## 1.5 Discovery de IDs no ambiente de homologação
+
+Antes do smoke test, é necessário descobrir os IDs reais do iScholar e preencher os mapas JSON.
+
+### 1.5.1 Configurar credenciais
+
+1. Copiar `.env.example` para `.env`
+2. Gerar o token em https://madan_homolog.ischolar.com.br/ (seguir instruções do iScholar)
+3. Preencher `ISCHOLAR_API_TOKEN` no `.env`
+
+### 1.5.2 Rodar o script de discovery
+
+```bash
+# Discovery básico com um RA de teste conhecido:
+python descobrir_ids_ischolar.py --ra <RA_TESTE>
+
+# Com respostas brutas da API (para debug):
+python descobrir_ids_ischolar.py --ra <RA_TESTE> --verbose
+
+# Gerar esqueletos dos mapas JSON:
+python descobrir_ids_ischolar.py --ra <RA_TESTE> --gerar-mapas
+```
+
+### 1.5.3 Checklist do discovery
+
+- [ ] `descobrir_ids_ischolar.py` etapa 1 (conectividade) passa sem erro **🔴 BLOQUEANTE**
+- [ ] `descobrir_ids_ischolar.py` etapa 2 (buscar aluno) retorna id_aluno **🔴 BLOQUEANTE**
+- [ ] `descobrir_ids_ischolar.py` etapa 3 (listar matrículas) retorna id_matricula **🔴 BLOQUEANTE**
+- [ ] `descobrir_ids_ischolar.py` etapa 4 (listar notas) retorna IDs de disciplina/avaliação **🟡 ATENÇÃO**
+- [ ] Shape de `/aluno/busca` compatível com `_extrair_id_aluno_da_resposta()` **🔴 BLOQUEANTE**
+- [ ] Shape de `/matricula/listar` compatível com a extração de `id_matricula` **🔴 BLOQUEANTE**
+
+### 1.5.4 Preencher os mapas
+
+1. Copiar os esqueletos gerados pelo `--gerar-mapas` para os arquivos de mapa
+2. Completar com IDs adicionais da interface web do iScholar se necessário
+3. Revisar nomes normalizados (sem acentos, minúsculas)
+
+> **Limitação:** O script extrai IDs das notas de UMA matrícula. Para cobertura completa, rode com alunos de diferentes disciplinas ou consulte a interface web do iScholar.
 
 ---
 
@@ -91,14 +143,16 @@ python cli_envio.py \
 
 ### 3.1 Pré-requisitos do ambiente de homologação
 
-- [ ] Credenciais de homologação fornecidas pelo TI do iScholar **🔴 BLOQUEANTE**
-- [ ] Código da escola de teste configurado no `.env`
-- [ ] Ambiente de homologação confirmado como separado da produção **🔴 BLOQUEANTE**
+- [x] URL da API confirmada: `https://api.ischolar.app` (mesma para homologação e produção)
+- [x] Código da escola de homologação: `madan_homolog`
+- [x] Interface web de homologação disponível: `https://madan_homolog.ischolar.com.br/`
+- [ ] Token (`X-Autorizacao`) gerado e configurado no `.env` **🔴 BLOQUEANTE**
 - [ ] Ao menos um aluno real (ou de teste) com RA conhecido disponível no ambiente
-- [ ] IDs de disciplina e avaliação confirmados para o ambiente de homologação
+- [ ] IDs de disciplina e avaliação descobertos via `descobrir_ids_ischolar.py` e preenchidos nos mapas
 
 ### 3.2 Validação de conectividade
 
+- [ ] `python descobrir_ids_ischolar.py --ra <RA_TESTE>` executa sem erro de autenticação **🔴 BLOQUEANTE**
 - [ ] `cli_envio.py` consegue inicializar `IScholarClient` sem erro (exit 5 ausente)
 - [ ] Preflight técnico completa com sucesso no ambiente de homologação
 
@@ -168,13 +222,13 @@ Qualquer um dos itens abaixo estiver presente:
 
 | Item | Quem resolve | Status |
 |------|-------------|--------|
-| Acesso ao ambiente de homologação | TI do iScholar | Pendente |
-| Credenciais e código da escola de teste | TI do iScholar | Pendente |
-| Shape real de `/aluno/busca` | TI do iScholar | Pendente |
-| Shape real de `/matricula/listar` | TI do iScholar | Pendente |
+| Acesso ao ambiente de homologação | TI do iScholar | **Resolvido** — `madan_homolog` |
+| Credenciais e código da escola de teste | TI do iScholar | **Parcialmente resolvido** — código = `madan_homolog`, token a gerar pelo operador |
+| Shape real de `/aluno/busca` | Desenvolvedor | **Pendente** — usar `descobrir_ids_ischolar.py` |
+| Shape real de `/matricula/listar` | Desenvolvedor | **Pendente** — usar `descobrir_ids_ischolar.py` |
 | Confirmação se `id_professor` é obrigatório para o Madan | TI do iScholar | Pendente |
-| IDs reais de disciplina para homologação | TI / Madan | Pendente |
-| IDs reais de avaliação para homologação | TI / Madan | Pendente |
+| IDs reais de disciplina para homologação | Desenvolvedor | **Pendente** — usar `descobrir_ids_ischolar.py --gerar-mapas` |
+| IDs reais de avaliação para homologação | Desenvolvedor | **Pendente** — usar `descobrir_ids_ischolar.py --gerar-mapas` |
 | Adoção formal do template fixo pelo Madan | Madan | Pendente |
 | Garantia de preenchimento do RA pelo Madan | Madan | Pendente |
 | Fechamento das regras pedagógicas provisórias | Madan | Pendente |

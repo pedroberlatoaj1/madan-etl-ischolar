@@ -41,10 +41,10 @@ def test_validacao_caso_valido_pendencia_identificador_nao_bloqueia():
         "Disciplina": "Matemática",
         "Frente - Professor": "Frente X - Prof Y",
         "Turma": "T1",
-        "AV 1 (OBJ)": "8,0",
-        "AV 1 (DISÇ)": "9",
-        "AV 2 (OBJ)": "6",
-        "AV 2 (DISÇ)": "8",
+        "AV 1 (OBJ)": "4,0",
+        "AV 1 (DISÇ)": "5",
+        "AV 2 (OBJ)": "3",
+        "AV 2 (DISÇ)": "4",
         "AV 3 (listas)": "7",
         "AV 3 (avaliação)": "6",
         "Simulado": "10",
@@ -96,8 +96,8 @@ def test_validacao_caso_limpo_resulta_em_apto_com_avisos():
         "Trimestre": "1",
         "Disciplina": "Física",
         "Turma": "T8",
-        "AV 1 (OBJ)": "8",
-        "AV 1 (DISÇ)": "8",
+        "AV 1 (OBJ)": "4",
+        "AV 1 (DISÇ)": "4",
     }
     lancs = linha_madan_para_lancamentos(row, linha_origem=99)
     res = validar_pre_envio_linha(row_wide=row, lancamentos=lancs, tolerancia_total=0.05)
@@ -122,8 +122,8 @@ def test_validacao_campo_obrigatorio_ausente_bloqueia():
         "Trimestre": "1",
         "Disciplina": "Química",
         "Turma": "T2",
-        "AV 1 (OBJ)": "8",
-        "AV 1 (DISÇ)": "8",
+        "AV 1 (OBJ)": "4",
+        "AV 1 (DISÇ)": "4",
     }
     lancs = linha_madan_para_lancamentos(row, linha_origem=None)  # linha_origem ausente
     res = validar_pre_envio_linha(row_wide=row, lancamentos=lancs)
@@ -146,9 +146,9 @@ def test_validacao_nota_fora_da_faixa_detecta():
         "Estudante": "Aluno 3",
         "Trimestre": "1",
         "Disciplina": "Bio",
-        "Turma": "T3",
+        "Turma": "2A",
         "AV 1 (OBJ)": "12",   # inválido
-        "AV 1 (DISÇ)": "8",
+        "AV 1 (DISÇ)": "4",
     }
     lancs = linha_madan_para_lancamentos(row, linha_origem=1)
     res = validar_pre_envio_linha(row_wide=row, lancamentos=lancs)
@@ -171,8 +171,8 @@ def test_validacao_duplicidade_nao_sendavel_avisa_sem_bloquear():
         "Trimestre": "1",
         "Disciplina": "Hist",
         "Turma": "T4",
-        "AV 1 (OBJ)": "8",
-        "AV 1 (DISÇ)": "8",
+        "AV 1 (OBJ)": "4",
+        "AV 1 (DISÇ)": "4",
     }
     lancs = linha_madan_para_lancamentos(row, linha_origem=10)
 
@@ -216,8 +216,8 @@ def test_duplicidade_sendavel_bloqueia():
         "Trimestre": "1",
         "Disciplina": "Física",
         "Turma": "T10",
-        "AV 1 (OBJ)": "8",
-        "AV 1 (DISÇ)": "8",
+        "AV 1 (OBJ)": "4",
+        "AV 1 (DISÇ)": "4",
     }
     lancs = linha_madan_para_lancamentos(row, linha_origem=20)
 
@@ -251,8 +251,8 @@ def test_validacao_estudante_ausente_bloqueia():
         "Trimestre": "1",
         "Disciplina": "Geo",
         "Turma": "T5",
-        "AV 1 (OBJ)": "8",
-        "AV 1 (DISÇ)": "8",
+        "AV 1 (OBJ)": "4",
+        "AV 1 (DISÇ)": "4",
     }
     lancs = linha_madan_para_lancamentos(row, linha_origem=2)
     res = validar_pre_envio_linha(row_wide=row, lancamentos=lancs)
@@ -276,8 +276,8 @@ def test_comparacao_total_divergente_gera_aviso():
         "Trimestre": "1",
         "Disciplina": "Mat",
         "Turma": "T6",
-        "AV 1 (OBJ)": "10",
-        "AV 1 (DISÇ)": "10",
+        "AV 1 (OBJ)": "5",
+        "AV 1 (DISÇ)": "5",
         "Simulado": "10",
         "Nota Final": "0",   # divergente de propósito
     }
@@ -297,8 +297,8 @@ def test_comparacao_total_ausente_nao_gera_erro():
         "Trimestre": "1",
         "Disciplina": "Mat",
         "Turma": "T7",
-        "AV 1 (OBJ)": "10",
-        "AV 1 (DISÇ)": "10",
+        "AV 1 (OBJ)": "5",
+        "AV 1 (DISÇ)": "5",
         "Simulado": "10",
     }
     lancs = linha_madan_para_lancamentos(row, linha_origem=6)
@@ -322,8 +322,8 @@ def test_identificador_pendente_nao_e_bloqueante():
         "Trimestre": "2",
         "Disciplina": "Arte",
         "Turma": "T9",
-        "AV 1 (OBJ)": "7",
-        "AV 1 (DISÇ)": "7",
+        "AV 1 (OBJ)": "3",
+        "AV 1 (DISÇ)": "4",
     }
     lancs = linha_madan_para_lancamentos(row, linha_origem=50)
     res = validar_pre_envio_linha(row_wide=row, lancamentos=lancs)

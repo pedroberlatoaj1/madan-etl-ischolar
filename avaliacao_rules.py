@@ -3,6 +3,31 @@ avaliacao_rules.py — Regras avaliativas do Madan (Etapa 1)
 
 Camada explícita, testável e isolada das regras pedagógicas. Não depende de fila,
 worker, HTTP ou integração com iScholar.
+
+Fonte oficial: "Sistema Avaliativo.pdf" (documento interno do Madan, 1ª e 2ª séries).
+
+STATUS DAS REGRAS (atualizado 2026-03-25):
+─────────────────────────────────────────
+✅ CONFIRMADO pelo PDF:
+   - Tabela de pesos por trimestre e nivelamento (PESOS_OFICIAIS)
+   - AV3 = 70% listas + 30% avaliação (calcular_av3_nivelamento)
+   - Ponto extra aplicado na coluna AV1, teto de 10 (aplicar_ponto_extra_em_av1)
+   - Ponto extra ignorado se avaliação "fechada" (avaliacao_fechada=True)
+   - Notas digitadas de 0 a 10, pesos aplicados pelo iScholar (não pelo pipeline)
+   - AV3 condicional: só para alunos com nivelamento
+
+✅ CONFIRMADO pelo pedagógico do Madan:
+   - consolidar_obj_disc: SOMA SIMPLES de OBJ + DISC (não média), com teto 10
+   - 3ª série: EXCLUÍDA do processamento (regras diferentes, não documentadas)
+
+⚠️ PROVISÓRIO (aguardando reunião com pedagógico):
+   - Recuperação: regras de substituição/média (não mencionada no PDF)
+
+ℹ️ NOTA IMPORTANTE:
+   O pipeline envia notas BRUTAS (0 a 10) ao iScholar. Os pesos da tabela
+   PESOS_OFICIAIS são aplicados PELO iScholar ao receber a nota, não pelo
+   nosso código de envio. O pipeline usa os pesos apenas para validação,
+   conferência e auditoria local.
 """
 
 from __future__ import annotations
@@ -33,17 +58,21 @@ COMPONENTES_CANONICOS = (AV1, AV2, AV3, SIMULADO, AV3_LISTAS, AV3_AVALIACAO, PON
 
 
 # ---------------------------------------------------------------------------
-# Tabela oficial de pesos (PDF "Sistema Avaliativo.pdf")
+# Tabela oficial de pesos — CONFIRMADA pelo PDF "Sistema Avaliativo.pdf"
 # ---------------------------------------------------------------------------
+# Totais: T1/T2 = 30 pontos | T3 = 40 pontos
+# Sem nivelamento: AV3 não existe (peso redistributído entre AV1/AV2/Simulado)
+# Com nivelamento: AV3 recebe peso próprio
+# Aplica-se a 1ª e 2ª séries. Regras da 3ª série ainda não documentadas.
 
 PESOS_OFICIAIS: dict[tuple[str, bool], dict[str, float]] = {
-    # 1º e 2º trimestre, sem nivelamento
+    # 1º e 2º trimestre, sem nivelamento (total = 30)
     ("t1t2", False): {AV1: 12.0, AV2: 15.0, SIMULADO: 3.0},
-    # 1º e 2º trimestre, com nivelamento
+    # 1º e 2º trimestre, com nivelamento (total = 30)
     ("t1t2", True): {AV1: 9.0, AV2: 9.0, AV3: 9.0, SIMULADO: 3.0},
-    # 3º trimestre, sem nivelamento
+    # 3º trimestre, sem nivelamento (total = 40)
     ("t3", False): {AV1: 16.0, AV2: 18.0, SIMULADO: 6.0},
-    # 3º trimestre, com nivelamento
+    # 3º trimestre, com nivelamento (total = 40)
     ("t3", True): {AV1: 12.0, AV2: 12.0, AV3: 12.0, SIMULADO: 4.0},
 }
 
@@ -162,9 +191,12 @@ def calcular_nota_ponderada(nota_0_10: Any, peso: Any, *, arredondar: int | None
 
 def calcular_av3_nivelamento(av3_listas: Any, av3_avaliacao: Any, *, arredondar: int | None = 2) -> float:
     """
-    Regra oficial: Av3 (nivelamento) = 7,0 pontos de listas + 3,0 pontos de avaliação.
+    ✅ CONFIRMADO pelo PDF "Sistema Avaliativo.pdf":
+    Av3 (nivelamento) = 7,0 pontos de listas + 3,0 pontos de avaliação.
     Notas digitadas seguem 0..10, então:
       Av3 = (listas/10)*7 + (avaliacao/10)*3
+
+    Apenas alunos com nivelamento possuem AV3.
     """
     listas = validar_nota_0_10(av3_listas, allow_blank=False)
     avaliacao = validar_nota_0_10(av3_avaliacao, allow_blank=False)
@@ -180,14 +212,18 @@ def aplicar_ponto_extra_em_av1(
     arredondar: int | None = 2,
 ) -> float:
     """
-    Regra oficial (PDF): pontos extras devem ser computados na coluna Av1,
-    a menos que o aluno tenha fechado essa avaliação.
+    ✅ CONFIRMADO pelo PDF "Sistema Avaliativo.pdf":
+    "Os pontos extras devem ser computados na coluna Av1, a menos que
+     o aluno tenha fechado essa avaliação."
 
-    Regras obrigatórias:
-    - se Av1 já estiver em 10, ponto extra deve ser ignorado
-    - se Av1 + ponto extra ultrapassar 10, truncar em 10
-    - notas > 10 são inválidas, exceto no caso do somatório antes do truncamento
-    - ponto extra negativo => erro
+    Regras confirmadas:
+    - Ponto extra é somado à nota da AV1
+    - Se AV1 já estiver em 10, ponto extra deve ser ignorado
+    - Se AV1 + ponto extra ultrapassar 10, truncar em 10 (teto)
+    - Se avaliacao_fechada=True, retorna AV1 sem alteração
+    - Ponto extra negativo => erro
+
+    ⚠️ PENDENTE: definição exata de "fechada" (a confirmar na reunião).
     """
     n_av1 = validar_nota_0_10(av1, allow_blank=False)
     if avaliacao_fechada:
@@ -212,16 +248,21 @@ def consolidar_obj_disc(
     nota_obj: Any,
     nota_disc: Any,
     *,
-    policy: Literal["media_simples", "maximo"] = "media_simples",
+    policy: Literal["soma", "media_simples", "maximo"] = "soma",
     arredondar: int | None = 2,
 ) -> float | None:
     """
-    Consolida subcomponentes (OBJ + DISC) em uma nota única 0..10.
+    ✅ CONFIRMADO pelo pedagógico do Madan:
+    AV1 e AV2 são compostas por duas provas (Objetiva e Discursiva).
+    A nota final é a SOMA SIMPLES de OBJ + DISC, com restrição: soma ≤ 10.
 
-    Política provisória (Etapa 2) — explícita e auditável:
-    - Se OBJ e DISC existirem: usa a política indicada:
-      - "media_simples": (obj + disc) / 2
-      - "maximo": max(obj, disc)
+    Políticas disponíveis:
+    - "soma" (OFICIAL): obj + disc, com validação soma ≤ 10
+    - "media_simples": (obj + disc) / 2  (legado, mantido por compatibilidade)
+    - "maximo": max(obj, disc)  (legado, mantido por compatibilidade)
+
+    Regras:
+    - Se OBJ e DISC existirem: aplica a política indicada
     - Se apenas um existir: usa esse valor
     - Se nenhum existir: retorna None (componente deve ser ignorado)
 
@@ -237,7 +278,14 @@ def consolidar_obj_disc(
     if disc is None:
         return round(obj, arredondar) if arredondar is not None else obj
 
-    if policy == "media_simples":
+    if policy == "soma":
+        v = obj + disc
+        if v > 10:
+            raise ValueError(
+                f"Soma OBJ ({obj}) + DISC ({disc}) = {v} ultrapassa 10. "
+                f"A soma das provas objetiva e discursiva deve ser ≤ 10."
+            )
+    elif policy == "media_simples":
         v = (obj + disc) / 2.0
     elif policy == "maximo":
         v = max(obj, disc)

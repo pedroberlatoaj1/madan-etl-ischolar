@@ -132,6 +132,33 @@ def normalizar_linha_madan(row: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
+def extrair_serie_da_turma(turma: Any) -> int | None:
+    """
+    Extrai a série (1, 2 ou 3) a partir do campo turma.
+
+    Convenção Madan: turma começa com o número da série.
+    Exemplos: "1A" → 1, "2B" → 2, "3A" → 3, "1ºA" → 1.
+
+    Retorna None se não for possível determinar a série
+    (turma vazia, sem dígitos, ou dígito fora de 1-3).
+    """
+    if is_blank(turma):
+        return None
+    s = str(turma).strip()
+    # Busca o primeiro dígito na string
+    for c in s:
+        if c.isdigit():
+            d = int(c)
+            if 1 <= d <= 3:
+                return d
+            return None  # dígito fora do domínio
+    return None
+
+
+SERIES_SUPORTADAS: tuple[int, ...] = (1, 2)
+"""Séries cujas regras de cálculo estão implementadas (1ª e 2ª)."""
+
+
 def inferir_tem_nivelamento(row_normalizada: Mapping[str, Any]) -> bool:
     """
     Heurística explícita (Etapa 2):
@@ -229,8 +256,10 @@ __all__ = [
     "normalizar_linha_madan",
     "inferir_tem_nivelamento",
     "extrair_contexto_linha",
-    "validar_colunas_obrigatorias_template",  # NOVO
-    "COLUNAS_OBRIGATORIAS_TEMPLATE",          # NOVO
+    "validar_colunas_obrigatorias_template",
+    "COLUNAS_OBRIGATORIAS_TEMPLATE",
+    "extrair_serie_da_turma",
+    "SERIES_SUPORTADAS",
     "LinhaMadanCanonica",
     "linha_wide_para_canonica",
     # chaves canônicas

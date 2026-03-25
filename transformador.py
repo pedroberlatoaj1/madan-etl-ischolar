@@ -84,6 +84,8 @@ def linha_madan_para_lancamentos(
         CAN_SIMULADO,
         CAN_TRIMESTRE,
         CAN_TURMA,
+        SERIES_SUPORTADAS,
+        extrair_serie_da_turma,
         linha_wide_para_canonica,
     )
 
@@ -97,6 +99,35 @@ def linha_madan_para_lancamentos(
         "trimestre": canon.contexto.get(CAN_TRIMESTRE),
         "tem_nivelamento": canon.tem_nivelamento,
     }
+
+    # ──────────────────────────────────────────────────────────────
+    # FILTRO DE SÉRIE: apenas 1ª e 2ª séries são processadas.
+    # 3ª série possui regras diferentes (não documentadas) e deve
+    # ser bloqueada com mensagem clara.
+    # ──────────────────────────────────────────────────────────────
+    serie = extrair_serie_da_turma(ctx["turma"])
+    if serie is not None and serie not in SERIES_SUPORTADAS:
+        return [{
+            **ctx,
+            "componente": "todos",
+            "subcomponente": None,
+            "nota_original": None,
+            "nota_ajustada_0a10": None,
+            "peso_avaliacao": None,
+            "valor_ponderado": None,
+            "status": "bloqueado",
+            "motivo_status": (
+                f"serie_{serie}_nao_suportada: "
+                f"apenas séries {SERIES_SUPORTADAS} são processadas. "
+                f"O 3º ano possui regras de cálculo diferentes que ainda não foram implementadas."
+            ),
+            "observacoes": {"serie_detectada": serie, "turma_original": ctx["turma"]},
+            "linha_origem": linha_origem,
+            "hash_conteudo": _hash_conteudo({
+                "estudante": ctx["estudante"], "ra": ctx["ra"],
+                "turma": ctx["turma"], "serie_bloqueada": serie,
+            }),
+        }]
 
     def base_lancamento(**kwargs: Any) -> dict[str, Any]:
         base = {
@@ -152,7 +183,8 @@ def linha_madan_para_lancamentos(
     _emit_conferencia(CAN_NOTA_COM_AV3, "nota_com_av3")
     _emit_conferencia(CAN_NOTA_FINAL, "nota_final")
 
-    # Recuperação (preserva mas não pondera aqui)
+    # ⚠️ Recuperação: PDF "Sistema Avaliativo.pdf" NÃO menciona recuperação.
+    # Regras a definir na reunião. Preserva nota sem ponderar.
     raw_rec = canon.componentes.get(CAN_RECUPERACAO)
     if not is_blank(raw_rec):
         lancamentos.append(
@@ -160,7 +192,7 @@ def linha_madan_para_lancamentos(
                 componente="recuperacao",
                 nota_original=raw_rec,
                 status="pronto",
-                motivo_status="preservado_para_etapa_futura",
+                motivo_status="preservado_regra_pendente_reuniao",
             )
         )
 
@@ -204,11 +236,10 @@ def linha_madan_para_lancamentos(
     _emit_sub(raw_av2_obj, AV2, "obj")
     _emit_sub(raw_av2_disc, AV2, "disc")
 
-    # Consolidação provisória explícita:
-    # - default: média simples dos subcomponentes presentes
-    # - preserva subcomponentes originais (já emitidos)
-    # - registra a política no motivo_status/observacoes
-    consolidacao_policy = "media_simples"
+    # ✅ CONFIRMADO pelo pedagógico do Madan:
+    # AV1/AV2 = SOMA SIMPLES de OBJ + DISC, com restrição: soma ≤ 10.
+    # Preserva subcomponentes originais (já emitidos) e registra a política.
+    consolidacao_policy = "soma"
 
     def _emit_consolidado_av12(componente: str, raw_obj: Any, raw_disc: Any) -> None:
         if is_blank(raw_obj) and is_blank(raw_disc):
@@ -413,7 +444,8 @@ def linha_madan_para_lancamentos(
             )
         )
 
-    # Ponto extra: não some; mas aplicação depende de contrato de "avaliação fechada" (pendente).
+    # ✅ Ponto extra CONFIRMADO pelo PDF: aplica na coluna AV1, teto 10.
+    # ⚠️ Pendente: definição exata de "avaliação fechada" (reunião).
     raw_extra = canon.componentes.get(CAN_PONTO_EXTRA)
     raw_obs_extra = canon.componentes.get(CAN_OBS_PONTO_EXTRA)
     if is_blank(raw_extra):

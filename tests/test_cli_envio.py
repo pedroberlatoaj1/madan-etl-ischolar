@@ -38,8 +38,8 @@ def _df_template_valido() -> pd.DataFrame:
         "Trimestre": "1",
         "Disciplina": "Matemática",
         "Frente - Professor": "Mat - Prof Silva",
-        "AV 1 (OBJ)": "8",
-        "AV 1 (DISC)": "8",
+        "AV 1 (OBJ)": "4",
+        "AV 1 (DISC)": "4",
         "Simulado": "9",
     }])
 
@@ -51,8 +51,8 @@ def _df_sem_ra() -> pd.DataFrame:
         "Turma": "2A",
         "Trimestre": "1",
         "Disciplina": "Matemática",
-        "AV 1 (OBJ)": "8",
-        "AV 1 (DISC)": "8",
+        "AV 1 (OBJ)": "4",
+        "AV 1 (DISC)": "4",
     }])
 
 
