@@ -20,8 +20,11 @@ STATUS DAS REGRAS (atualizado 2026-03-25):
    - consolidar_obj_disc: SOMA SIMPLES de OBJ + DISC (não média), com teto 10
    - 3ª série: EXCLUÍDA do processamento (regras diferentes, não documentadas)
 
-⚠️ PROVISÓRIO (aguardando reunião com pedagógico):
-   - Recuperação: regras de substituição/média (não mencionada no PDF)
+✅ CONFIRMADO pelo pedagógico do Madan (regras de recuperação):
+   - Recuperação trimestral: rendimento < 60% no T1 ou T2
+   - T3 NÃO tem recuperação trimestral (exceção explícita)
+   - Recuperação final: rendimento anual < 60%
+   - Rendimento anual = média ponderada: (T1×30 + T2×30 + T3×40) / 100
 
 ℹ️ NOTA IMPORTANTE:
    O pipeline envia notas BRUTAS (0 a 10) ao iScholar. Os pesos da tabela
@@ -348,4 +351,226 @@ def extrair_componentes_validos(linha: Mapping[str, Any]) -> ExtracaoComponentes
         componentes[PONTO_EXTRA] = extra
 
     return ExtracaoComponentes(componentes=componentes, av3_incompleta=av3_incompleta)
+
+
+# ---------------------------------------------------------------------------
+# Recuperação — regras confirmadas pelo pedagógico do Madan
+# ---------------------------------------------------------------------------
+# ✅ CONFIRMADO:
+#   1. Recuperação trimestral: rendimento < 60% no T1 ou T2.
+#   2. Exceção do 3º trimestre: NÃO existe recuperação trimestral para T3.
+#   3. Recuperação final: rendimento anual < 60%.
+#   4. Rendimento anual = média ponderada: T1×30 + T2×30 + T3×40 (÷ 100).
+#
+# DEFINIÇÃO DE RENDIMENTO TRIMESTRAL:
+#   rendimento_trimestral = (soma_ponderados / total_pesos_trimestre) * 100
+#   Onde total_pesos_trimestre = 30 (T1/T2) ou 40 (T3).
+#
+# ℹ️ O pipeline processa cada trimestre isoladamente (uma planilha por
+#   trimestre). O cálculo de rendimento anual e recuperação final exige
+#   agregar os 3 trimestres — isso é feito no nível de lote/relatório,
+#   não no transformador individual.
+
+LIMIAR_RECUPERACAO: float = 60.0
+"""Limiar de rendimento (%) abaixo do qual o aluno fica em recuperação."""
+
+PESOS_TRIMESTRAIS_ANUAIS: dict[str, float] = {
+    "t1": 30.0,
+    "t2": 30.0,
+    "t3": 40.0,
+}
+"""Pesos dos trimestres para cálculo do rendimento anual (total = 100)."""
+
+TRIMESTRES_COM_RECUPERACAO: tuple[str, ...] = ("t1", "t2")
+"""Apenas T1 e T2 têm recuperação trimestral. T3 NÃO tem."""
+
+
+def calcular_rendimento_trimestral(
+    soma_ponderados: Any,
+    trimestre: Any,
+    *,
+    arredondar: int | None = 2,
+) -> float:
+    """
+    Calcula o rendimento percentual do trimestre.
+
+    rendimento = (soma_ponderados / total_pesos_trimestre) × 100
+
+    Onde total_pesos_trimestre:
+      - T1/T2: 30 pontos
+      - T3:    40 pontos
+
+    Retorna valor em percentual (0.0 a 100.0).
+    """
+    soma = _coerce_float(soma_ponderados)
+    if soma < 0:
+        raise ValueError(f"Soma de ponderados negativa: {soma!r}")
+
+    tri_norm = normalizar_trimestre(trimestre)
+    if tri_norm == "t1t2":
+        total_pesos = 30.0
+    elif tri_norm == "t3":
+        total_pesos = 40.0
+    else:
+        raise ValueError(f"Trimestre inválido para rendimento: {trimestre!r}")
+
+    rendimento = (soma / total_pesos) * 100.0
+    return round(rendimento, arredondar) if arredondar is not None else rendimento
+
+
+def verificar_recuperacao_trimestral(
+    rendimento_percentual: Any,
+    trimestre: Any,
+) -> bool:
+    """
+    Verifica se o aluno fica em recuperação trimestral.
+
+    ✅ Regra 1: rendimento < 60% → recuperação trimestral.
+    ✅ Regra 2: T3 NUNCA tem recuperação trimestral.
+
+    Retorna True se o aluno deve fazer recuperação trimestral.
+    """
+    rend = _coerce_float(rendimento_percentual)
+    tri_norm = normalizar_trimestre(trimestre)
+
+    # Regra 2: T3 nunca tem recuperação trimestral
+    if tri_norm == "t3":
+        return False
+
+    # Regra 1: rendimento < 60% → recuperação
+    return rend < LIMIAR_RECUPERACAO
+
+
+def calcular_rendimento_anual(
+    rendimento_t1: Any,
+    rendimento_t2: Any,
+    rendimento_t3: Any,
+    *,
+    arredondar: int | None = 2,
+) -> float:
+    """
+    Calcula o rendimento anual por média ponderada.
+
+    ✅ Regra 4:
+      rendimento_anual = (T1 × 30 + T2 × 30 + T3 × 40) / 100
+
+    Os rendimentos de entrada são percentuais (0.0 a 100.0).
+    Retorna percentual (0.0 a 100.0).
+    """
+    r1 = _coerce_float(rendimento_t1)
+    r2 = _coerce_float(rendimento_t2)
+    r3 = _coerce_float(rendimento_t3)
+
+    for label, val in [("T1", r1), ("T2", r2), ("T3", r3)]:
+        if val < 0 or val > 100:
+            raise ValueError(
+                f"Rendimento {label} fora da faixa 0-100: {val!r}"
+            )
+
+    anual = (
+        r1 * PESOS_TRIMESTRAIS_ANUAIS["t1"]
+        + r2 * PESOS_TRIMESTRAIS_ANUAIS["t2"]
+        + r3 * PESOS_TRIMESTRAIS_ANUAIS["t3"]
+    ) / 100.0
+
+    return round(anual, arredondar) if arredondar is not None else anual
+
+
+def verificar_recuperacao_final(
+    rendimento_anual: Any,
+) -> bool:
+    """
+    Verifica se o aluno fica em recuperação final.
+
+    ✅ Regra 3: rendimento anual < 60% → recuperação final.
+
+    O rendimento_anual deve ser o resultado de calcular_rendimento_anual().
+    Retorna True se o aluno deve fazer recuperação final.
+    """
+    rend = _coerce_float(rendimento_anual)
+    return rend < LIMIAR_RECUPERACAO
+
+
+@dataclass(frozen=True)
+class ResultadoRecuperacao:
+    """
+    Resultado completo da avaliação de recuperação de um aluno.
+
+    Campos:
+      rendimento_t1, rendimento_t2, rendimento_t3: percentuais por trimestre
+      rendimento_anual: média ponderada (30-30-40)
+      recuperacao_t1: True se precisa de recuperação no T1
+      recuperacao_t2: True se precisa de recuperação no T2
+      recuperacao_t3: sempre False (T3 não tem recuperação)
+      recuperacao_final: True se rendimento anual < 60%
+    """
+    rendimento_t1: float
+    rendimento_t2: float
+    rendimento_t3: float
+    rendimento_anual: float
+    recuperacao_t1: bool
+    recuperacao_t2: bool
+    recuperacao_t3: bool   # sempre False — explícito para auditoria
+    recuperacao_final: bool
+
+
+def avaliar_recuperacao_completa(
+    soma_ponderados_t1: Any,
+    soma_ponderados_t2: Any,
+    soma_ponderados_t3: Any,
+) -> ResultadoRecuperacao:
+    """
+    Avaliação completa de recuperação: calcula rendimentos e verifica
+    todas as regras de recuperação de uma vez.
+
+    Entrada: soma dos valores ponderados de cada trimestre.
+    Saída: ResultadoRecuperacao com todos os flags e percentuais.
+    """
+    rend_t1 = calcular_rendimento_trimestral(soma_ponderados_t1, 1)
+    rend_t2 = calcular_rendimento_trimestral(soma_ponderados_t2, 2)
+    rend_t3 = calcular_rendimento_trimestral(soma_ponderados_t3, 3)
+
+    rend_anual = calcular_rendimento_anual(rend_t1, rend_t2, rend_t3)
+
+    return ResultadoRecuperacao(
+        rendimento_t1=rend_t1,
+        rendimento_t2=rend_t2,
+        rendimento_t3=rend_t3,
+        rendimento_anual=rend_anual,
+        recuperacao_t1=verificar_recuperacao_trimestral(rend_t1, 1),
+        recuperacao_t2=verificar_recuperacao_trimestral(rend_t2, 2),
+        recuperacao_t3=False,  # Regra 2: T3 NUNCA tem recuperação
+        recuperacao_final=verificar_recuperacao_final(rend_anual),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Constantes de status e motivo_status de lançamentos (Etapa 2)
+# ---------------------------------------------------------------------------
+
+class StatusLancamento:
+    """Valores possíveis para o campo 'status' de um lançamento canônico."""
+    PRONTO         = "pronto"
+    IGNORADO       = "ignorado"
+    ERRO_VALIDACAO = "erro_validacao"
+    INCOMPLETO     = "incompleto"
+    BLOQUEADO      = "bloqueado"
+
+
+class MotivoStatus:
+    """Valores possíveis para o campo 'motivo_status' de um lançamento canônico."""
+    EM_BRANCO                      = "em_branco"
+    OK                             = "ok"
+    CAMPO_CONFERENCIA              = "campo_de_conferencia_apenas"
+    METADADO_CONFERENCIA           = "metadado_de_conferencia"
+    CONSOLIDADO_OBJ_DISC           = "consolidado_obj_disc"
+    SUBCOMPONENTE_PRESERVADO       = "subcomponente_preservado"
+    SUBCOMPONENTE_PRESERVADO_SEM_CONS = "subcomponente_preservado_sem_consolidacao"
+    PESO_AUSENTE                   = "peso_ausente_para_cenario"
+    PESO_SIMULADO_AUSENTE          = "peso_simulado_ausente_para_cenario"
+    PESO_AV3_AUSENTE               = "peso_av3_ausente_para_cenario"
+    AV3_INCOMPLETA                 = "av3_incompleta_precisa_listas_e_avaliacao"
+    REC_T3_NAO_EXISTE              = "recuperacao_trimestral_nao_existe_para_t3"
+    REC_TRIMESTRAL_CONFIRMADA      = "recuperacao_trimestral_confirmada"
+    PRESERVADO_AV1_CONTRATO        = "preservado_aplicacao_em_av1_depende_de_contrato_avaliacao_fechada"
 

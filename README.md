@@ -456,7 +456,22 @@ O `cli_envio.py` é o orquestrador oficial do fluxo novo.
 8. Enviar (dry-run ou real);
 9. Imprimir resultado final.
 
-### 10.2 Exit codes
+### 10.2 Flag `--turma-dir`
+
+O CLI aceita `--turma-dir` como alternativa a `--planilha` para processamento batch de planilhas por turma:
+
+```bash
+python cli_envio.py --turma-dir planilhas/ --lote-id t1-2026 --dry-run
+```
+
+Quando usado:
+1. Compila automaticamente cada `.xlsx` multi-abas (gerado por `gerador_planilhas.py`) via `compilador_turma.py`
+2. Concatena todos os resultados num único DataFrame
+3. Prossegue com o fluxo normal (ETAPAs 1-9)
+
+Mutuamente exclusivo com `--planilha`.
+
+### 10.3 Exit codes
 
 | Código | Significado |
 |--------|-------------|
@@ -578,7 +593,19 @@ Variáveis principais:
 - suporte a dry-run;
 - script de discovery de IDs;
 - autopreenchimento de mapas via API;
-- 265 testes automatizados passando.
+- AV1/AV2 consolidados por soma simples (OBJ + DISC ≤ 10), confirmado pelo pedagógico;
+- 3ª série bloqueada explicitamente (`status=bloqueado`, com motivo claro);
+- regras de recuperação trimestral (T1/T2) e final implementadas, com exceção de T3;
+- rendimento anual por média ponderada 30-30-40 implementado;
+- registro de 37 professores (`professores_madan.py`) transcrito do PDF oficial;
+- cross-validation professor × disciplina × turma com aviso não-bloqueante;
+- `mapa_disciplinas.json` expandido com 12 novas disciplinas e siglas do PDF;
+- `mapa_professores.json` reescrito com 82 chaves reais (IDs a preencher via discovery);
+- status e motivo_status centralizados em `StatusLancamento` e `MotivoStatus` em `avaliacao_rules.py`;
+- `gerador_planilhas.py` — geração automatizada de planilhas Excel multi-abas por turma com dados pré-preenchidos;
+- `compilador_turma.py` — compilação de planilhas multi-abas para o formato pipeline (1 linha = 1 aluno × 1 disciplina);
+- flag `--turma-dir` no CLI para processamento batch de planilhas por turma;
+- 402 testes automatizados passando.
 
 ### 14.2 Hardening concluído
 
@@ -646,12 +673,10 @@ O sistema já implementa regras pedagógicas explícitas e auditáveis, em vez d
 
 As seguintes frentes ainda exigem validação final do Madan ou confirmação operacional:
 
-- consolidação final de AV1 OBJ + AV1 DISC;
-- consolidação final de AV2 OBJ + AV2 DISC;
-- política final de AV3 incompleta;
-- política final de Recuperação;
-- política final de Ponto extra em casos de borda;
-- como essas regras devem aparecer no diário do iScholar.
+- política final de AV3 incompleta (quando apenas listas ou apenas avaliação estão presentes);
+- política final de Ponto extra em casos de borda (avaliação "fechada");
+- como as regras de recuperação devem aparecer no diário do iScholar;
+- IDs reais de professores no `mapa_professores.json` (aguardando token de homologação).
 
 O projeto prefere:
 
@@ -713,9 +738,12 @@ e evita heurísticas silenciosas perigosas.
 
 - `cli_envio.py` — orquestrador principal
 - `madan_planilha_mapper.py` — mapeamento e validação do template
-- `avaliacao_rules.py` — regras pedagógicas
+- `avaliacao_rules.py` — regras pedagógicas + `StatusLancamento` + `MotivoStatus`
 - `transformador.py` — transformação canônica
-- `validacao_pre_envio.py` — validação pré-envio
+- `validacao_pre_envio.py` — validação pré-envio com cross-validation de professor
+- `professores_madan.py` — registro de 37 professores do PDF + busca + validação
+- `gerador_planilhas.py` — geração de planilhas multi-abas por turma (1 aba por disciplina-frente-professor)
+- `compilador_turma.py` — compilação de planilhas multi-abas → formato pipeline
 - `aprovacao_lote.py` — controle de lote e aprovação
 - `aprovacao_lote_store.py` — persistência de aprovações (SQLite)
 - `lote_itens_store.py` — persistência de itens aprovados (SQLite)
@@ -753,19 +781,23 @@ e evita heurísticas silenciosas perigosas.
 
 ## 20. Cobertura de testes
 
-O projeto possui **265 testes automatizados** organizados em:
+O projeto possui **402 testes automatizados** organizados em:
 
 | Suite | Cobertura |
 |-------|-----------|
 | `test_ischolar_client.py` | Sync idempotente, conflitos, fallbacks legados |
 | `test_resolvedor_ids_ischolar.py` | Resolução de IDs, mapas, fail-closed |
 | `test_cli_envio.py` | Fluxo completo do CLI, exit codes |
-| `test_transformador.py` | Transformação canônica |
-| `test_validacao_pre_envio.py` | Validação pré-envio |
+| `test_transformador.py` | Transformação canônica, consolidação AV1/AV2, bloqueio 3ª série |
+| `test_validacao_pre_envio.py` | Validação pré-envio, cross-validation de professor |
 | `test_aprovacao_lote.py` | Aprovação, elegibilidade, snapshot |
 | `test_madan_planilha_mapper.py` | Template, colunas, aliases |
 | `test_avaliacao_rules.py` | Regras pedagógicas |
 | `test_novos_endpoints.py` | Novos endpoints, envelope "dados", fallback pega_alunos, autopreenchimento de mapas, coerção int/string |
+| `test_professores_madan.py` | Registro de professores, busca, siglas, validação cruzada |
+| `test_recuperacao.py` | Regras de recuperação trimestral/final, rendimento anual ponderado |
+| `test_gerador_planilhas.py` | Geração de planilhas multi-abas, roster CSV, metadata, proteção de colunas |
+| `test_compilador_turma.py` | Compilação multi-abas → pipeline, round-trip, formato de saída |
 | `test_alertas.py` | Alertas operacionais |
 | `test_snapshot_store.py` | Persistência de snapshots |
 | `test_job_store.py` | Persistência de jobs |
@@ -788,7 +820,11 @@ Este projeto já possui:
 - fallback robusto para resolução de IDs;
 - autopreenchimento de mapas via API;
 - script de discovery para homologação;
-- 265 testes automatizados passando;
+- regras pedagógicas de AV1/AV2, recuperação e bloqueio de 3ª série confirmadas e implementadas;
+- registro de 37 professores integrado com cross-validation;
+- geração automatizada de planilhas por turma e compilação para formato pipeline;
+- flag `--turma-dir` no CLI para processamento batch de turmas;
+- 402 testes automatizados passando;
 - base técnica suficiente para validar a integração real.
 
 O que ainda falta não é "escrever o pipeline do zero".

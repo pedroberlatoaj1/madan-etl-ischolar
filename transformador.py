@@ -56,11 +56,14 @@ def linha_madan_para_lancamentos(
         AV3_LISTAS,
         PONTO_EXTRA,
         SIMULADO,
+        MotivoStatus,
+        StatusLancamento,
         aplicar_ponto_extra_em_av1,
         calcular_av3_nivelamento,
         calcular_nota_ponderada,
         consolidar_obj_disc,
         is_blank,
+        normalizar_trimestre,
         obter_pesos,
         validar_nota_0_10,
     )
@@ -115,7 +118,7 @@ def linha_madan_para_lancamentos(
             "nota_ajustada_0a10": None,
             "peso_avaliacao": None,
             "valor_ponderado": None,
-            "status": "bloqueado",
+            "status": StatusLancamento.BLOQUEADO,
             "motivo_status": (
                 f"serie_{serie}_nao_suportada: "
                 f"apenas séries {SERIES_SUPORTADAS} são processadas. "
@@ -160,7 +163,7 @@ def linha_madan_para_lancamentos(
         lancamentos.append(
             base_lancamento(
                 componente="pesos",
-                status="erro_validacao",
+                status=StatusLancamento.ERRO_VALIDACAO,
                 motivo_status=f"trimestre/pesos inválidos: {e}",
             )
         )
@@ -173,8 +176,8 @@ def linha_madan_para_lancamentos(
             base_lancamento(
                 componente=componente_nome,
                 nota_original=raw,
-                status="ignorado",
-                motivo_status="campo_de_conferencia_apenas",
+                status=StatusLancamento.IGNORADO,
+                motivo_status=MotivoStatus.CAMPO_CONFERENCIA,
             )
         )
 
@@ -183,24 +186,62 @@ def linha_madan_para_lancamentos(
     _emit_conferencia(CAN_NOTA_COM_AV3, "nota_com_av3")
     _emit_conferencia(CAN_NOTA_FINAL, "nota_final")
 
-    # ⚠️ Recuperação: PDF "Sistema Avaliativo.pdf" NÃO menciona recuperação.
-    # Regras a definir na reunião. Preserva nota sem ponderar.
+    # ✅ Recuperação trimestral — regras confirmadas pelo pedagógico do Madan.
+    # A nota de recuperação é preservada com contexto completo para decisão
+    # posterior (rendimento só é calculável com todos os componentes do trimestre).
+    # Regras aplicadas:
+    #   - T1/T2: recuperação disponível se rendimento < 60%
+    #   - T3: NUNCA tem recuperação trimestral
     raw_rec = canon.componentes.get(CAN_RECUPERACAO)
+    tri_norm = normalizar_trimestre(ctx["trimestre"]) if not is_blank(ctx["trimestre"]) else None
+
     if not is_blank(raw_rec):
-        lancamentos.append(
-            base_lancamento(
-                componente="recuperacao",
-                nota_original=raw_rec,
-                status="pronto",
-                motivo_status="preservado_regra_pendente_reuniao",
+        # T3 com nota de recuperação é inconsistente — sinaliza como aviso
+        if tri_norm == "t3":
+            lancamentos.append(
+                base_lancamento(
+                    componente="recuperacao",
+                    nota_original=raw_rec,
+                    status=StatusLancamento.IGNORADO,
+                    motivo_status=MotivoStatus.REC_T3_NAO_EXISTE,
+                    observacoes={
+                        "regra": "T3 não tem recuperação trimestral",
+                        "nota_informada": raw_rec,
+                    },
+                )
             )
-        )
+        else:
+            try:
+                n_rec = validar_nota_0_10(raw_rec, allow_blank=False)
+                lancamentos.append(
+                    base_lancamento(
+                        componente="recuperacao",
+                        nota_original=raw_rec,
+                        nota_ajustada_0a10=n_rec,
+                        status=StatusLancamento.PRONTO,
+                        motivo_status=MotivoStatus.REC_TRIMESTRAL_CONFIRMADA,
+                        observacoes={
+                            "regra": "Recuperação trimestral (rendimento < 60%)",
+                            "trimestre": tri_norm,
+                            "limiar_recuperacao_pct": 60.0,
+                        },
+                    )
+                )
+            except Exception as e:
+                lancamentos.append(
+                    base_lancamento(
+                        componente="recuperacao",
+                        nota_original=raw_rec,
+                        status=StatusLancamento.ERRO_VALIDACAO,
+                        motivo_status=str(e),
+                    )
+                )
 
     # AV1/AV2 OBJ/DISC: preserva subcomponentes; consolidação fica explícita como pendência.
     def _emit_sub(nota_raw: Any, componente: str, sub: str) -> None:
         if is_blank(nota_raw):
             lancamentos.append(
-                base_lancamento(componente=componente, subcomponente=sub, status="ignorado", motivo_status="em_branco")
+                base_lancamento(componente=componente, subcomponente=sub, status=StatusLancamento.IGNORADO, motivo_status=MotivoStatus.EM_BRANCO)
             )
             return
         try:
@@ -211,8 +252,8 @@ def linha_madan_para_lancamentos(
                     subcomponente=sub,
                     nota_original=nota_raw,
                     nota_ajustada_0a10=n,
-                    status="pronto",
-                    motivo_status="subcomponente_preservado_sem_consolidacao",
+                    status=StatusLancamento.PRONTO,
+                    motivo_status=MotivoStatus.SUBCOMPONENTE_PRESERVADO_SEM_CONS,
                 )
             )
         except Exception as e:
@@ -221,7 +262,7 @@ def linha_madan_para_lancamentos(
                     componente=componente,
                     subcomponente=sub,
                     nota_original=nota_raw,
-                    status="erro_validacao",
+                    status=StatusLancamento.ERRO_VALIDACAO,
                     motivo_status=str(e),
                 )
             )
@@ -244,7 +285,7 @@ def linha_madan_para_lancamentos(
     def _emit_consolidado_av12(componente: str, raw_obj: Any, raw_disc: Any) -> None:
         if is_blank(raw_obj) and is_blank(raw_disc):
             lancamentos.append(
-                base_lancamento(componente=componente, status="ignorado", motivo_status="em_branco")
+                base_lancamento(componente=componente, status=StatusLancamento.IGNORADO, motivo_status=MotivoStatus.EM_BRANCO)
             )
             return
 
@@ -252,7 +293,7 @@ def linha_madan_para_lancamentos(
             nota_base = consolidar_obj_disc(raw_obj, raw_disc, policy=consolidacao_policy, arredondar=2)
             if nota_base is None:
                 lancamentos.append(
-                    base_lancamento(componente=componente, status="ignorado", motivo_status="em_branco")
+                    base_lancamento(componente=componente, status=StatusLancamento.IGNORADO, motivo_status=MotivoStatus.EM_BRANCO)
                 )
                 return
 
@@ -285,8 +326,8 @@ def linha_madan_para_lancamentos(
                         componente=componente,
                         nota_original={"obj": raw_obj, "disc": raw_disc},
                         nota_ajustada_0a10=nota_final_0a10,
-                        status="erro_validacao",
-                        motivo_status="peso_ausente_para_cenario",
+                        status=StatusLancamento.ERRO_VALIDACAO,
+                        motivo_status=MotivoStatus.PESO_AUSENTE,
                         observacoes=obs,
                     )
                 )
@@ -299,8 +340,8 @@ def linha_madan_para_lancamentos(
                     nota_ajustada_0a10=nota_final_0a10,
                     peso_avaliacao=peso,
                     valor_ponderado=calcular_nota_ponderada(nota_final_0a10, peso, arredondar=2),
-                    status="pronto",
-                    motivo_status="consolidado_obj_disc",
+                    status=StatusLancamento.PRONTO,
+                    motivo_status=MotivoStatus.CONSOLIDADO_OBJ_DISC,
                     observacoes=obs,
                 )
             )
@@ -309,7 +350,7 @@ def linha_madan_para_lancamentos(
                 base_lancamento(
                     componente=componente,
                     nota_original={"obj": raw_obj, "disc": raw_disc},
-                    status="erro_validacao",
+                    status=StatusLancamento.ERRO_VALIDACAO,
                     motivo_status=str(e),
                     observacoes={"policy_consolidacao": consolidacao_policy},
                 )
@@ -322,7 +363,7 @@ def linha_madan_para_lancamentos(
     raw_sim = canon.componentes.get(CAN_SIMULADO)
     if is_blank(raw_sim):
         lancamentos.append(
-            base_lancamento(componente=SIMULADO, status="ignorado", motivo_status="em_branco")
+            base_lancamento(componente=SIMULADO, status=StatusLancamento.IGNORADO, motivo_status=MotivoStatus.EM_BRANCO)
         )
     else:
         try:
@@ -334,8 +375,8 @@ def linha_madan_para_lancamentos(
                         componente=SIMULADO,
                         nota_original=raw_sim,
                         nota_ajustada_0a10=n,
-                        status="erro_validacao",
-                        motivo_status="peso_simulado_ausente_para_cenario",
+                        status=StatusLancamento.ERRO_VALIDACAO,
+                        motivo_status=MotivoStatus.PESO_SIMULADO_AUSENTE,
                     )
                 )
             else:
@@ -346,8 +387,8 @@ def linha_madan_para_lancamentos(
                         nota_ajustada_0a10=n,
                         peso_avaliacao=peso,
                         valor_ponderado=calcular_nota_ponderada(n, peso, arredondar=2),
-                        status="pronto",
-                        motivo_status="ok",
+                        status=StatusLancamento.PRONTO,
+                        motivo_status=MotivoStatus.OK,
                     )
                 )
         except Exception as e:
@@ -355,7 +396,7 @@ def linha_madan_para_lancamentos(
                 base_lancamento(
                     componente=SIMULADO,
                     nota_original=raw_sim,
-                    status="erro_validacao",
+                    status=StatusLancamento.ERRO_VALIDACAO,
                     motivo_status=str(e),
                 )
             )
@@ -367,7 +408,7 @@ def linha_madan_para_lancamentos(
     def _emit_av3_sub(raw: Any, sub: str) -> None:
         if is_blank(raw):
             lancamentos.append(
-                base_lancamento(componente=AV3, subcomponente=sub, status="ignorado", motivo_status="em_branco")
+                base_lancamento(componente=AV3, subcomponente=sub, status=StatusLancamento.IGNORADO, motivo_status=MotivoStatus.EM_BRANCO)
             )
             return
         try:
@@ -378,8 +419,8 @@ def linha_madan_para_lancamentos(
                     subcomponente=sub,
                     nota_original=raw,
                     nota_ajustada_0a10=n,
-                    status="pronto",
-                    motivo_status="subcomponente_preservado",
+                    status=StatusLancamento.PRONTO,
+                    motivo_status=MotivoStatus.SUBCOMPONENTE_PRESERVADO,
                 )
             )
         except Exception as e:
@@ -388,7 +429,7 @@ def linha_madan_para_lancamentos(
                     componente=AV3,
                     subcomponente=sub,
                     nota_original=raw,
-                    status="erro_validacao",
+                    status=StatusLancamento.ERRO_VALIDACAO,
                     motivo_status=str(e),
                 )
             )
@@ -409,8 +450,8 @@ def linha_madan_para_lancamentos(
                         componente=AV3,
                         nota_original={"listas": raw_listas, "avaliacao": raw_aval},
                         nota_ajustada_0a10=av3_ajustada,
-                        status="erro_validacao",
-                        motivo_status="peso_av3_ausente_para_cenario",
+                        status=StatusLancamento.ERRO_VALIDACAO,
+                        motivo_status=MotivoStatus.PESO_AV3_AUSENTE,
                     )
                 )
             else:
@@ -421,8 +462,8 @@ def linha_madan_para_lancamentos(
                         nota_ajustada_0a10=av3_ajustada,
                         peso_avaliacao=peso_av3,
                         valor_ponderado=calcular_nota_ponderada(av3_ajustada, peso_av3, arredondar=2),
-                        status="pronto",
-                        motivo_status="ok",
+                        status=StatusLancamento.PRONTO,
+                        motivo_status=MotivoStatus.OK,
                     )
                 )
         except Exception as e:
@@ -430,7 +471,7 @@ def linha_madan_para_lancamentos(
                 base_lancamento(
                     componente=AV3,
                     nota_original={"listas": raw_listas, "avaliacao": raw_aval},
-                    status="erro_validacao",
+                    status=StatusLancamento.ERRO_VALIDACAO,
                     motivo_status=str(e),
                 )
             )
@@ -438,8 +479,8 @@ def linha_madan_para_lancamentos(
         lancamentos.append(
             base_lancamento(
                 componente=AV3,
-                status="incompleto",
-                motivo_status="av3_incompleta_precisa_listas_e_avaliacao",
+                status=StatusLancamento.INCOMPLETO,
+                motivo_status=MotivoStatus.AV3_INCOMPLETA,
                 observacoes={"listas": raw_listas, "avaliacao": raw_aval},
             )
         )
@@ -450,7 +491,7 @@ def linha_madan_para_lancamentos(
     raw_obs_extra = canon.componentes.get(CAN_OBS_PONTO_EXTRA)
     if is_blank(raw_extra):
         lancamentos.append(
-            base_lancamento(componente=PONTO_EXTRA, status="ignorado", motivo_status="em_branco")
+            base_lancamento(componente=PONTO_EXTRA, status=StatusLancamento.IGNORADO, motivo_status=MotivoStatus.EM_BRANCO)
         )
     else:
         try:
@@ -461,8 +502,8 @@ def linha_madan_para_lancamentos(
                 base_lancamento(
                     componente=PONTO_EXTRA,
                     nota_original=raw_extra,
-                    status="pronto",
-                    motivo_status="preservado_aplicacao_em_av1_depende_de_contrato_avaliacao_fechada",
+                    status=StatusLancamento.PRONTO,
+                    motivo_status=MotivoStatus.PRESERVADO_AV1_CONTRATO,
                     observacoes={"observacao_ponto_extra": raw_obs_extra} if not is_blank(raw_obs_extra) else None,
                 )
             )
@@ -471,7 +512,7 @@ def linha_madan_para_lancamentos(
                 base_lancamento(
                     componente=PONTO_EXTRA,
                     nota_original=raw_extra,
-                    status="erro_validacao",
+                    status=StatusLancamento.ERRO_VALIDACAO,
                     motivo_status=str(e),
                     observacoes={"observacao_ponto_extra": raw_obs_extra} if not is_blank(raw_obs_extra) else None,
                 )
@@ -487,8 +528,8 @@ def linha_madan_para_lancamentos(
             lancamentos.append(
                 base_lancamento(
                     componente=f"{comp}_peso_esperado",
-                    status="ignorado",
-                    motivo_status="metadado_de_conferencia",
+                    status=StatusLancamento.IGNORADO,
+                    motivo_status=MotivoStatus.METADADO_CONFERENCIA,
                     observacoes={"peso_avaliacao": peso},
                 )
             )

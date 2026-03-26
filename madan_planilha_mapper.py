@@ -63,8 +63,6 @@ def normalizar_nome_coluna(nome: str) -> str:
     n = n.replace(" ", "_")
     # Remove caracteres estranhos mantendo alnum/underscore
     n = "".join(c for c in n if c.isalnum() or c == "_")
-    # Alguns cabeçalhos têm "av 1" separado: colapsa "av_1" e "av1"
-    n = n.replace("av_", "av_")
     return n
 
 

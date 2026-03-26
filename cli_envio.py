@@ -12,6 +12,9 @@ Uso:
   # Envio real com confirmação interativa no terminal:
   python cli_envio.py --planilha notas.xlsx --lote-id t1-2A-2026
 
+  # Batch de turmas (compila planilhas multi-abas automaticamente):
+  python cli_envio.py --turma-dir planilhas/ --lote-id t1-2026 --dry-run
+
   # Mapas em caminhos não padrão; DBs em paths explícitos:
   python cli_envio.py --planilha notas.xlsx --lote-id t1-2A-2026 --dry-run \
       --mapa-disciplinas mapas/disciplinas.json \
@@ -461,8 +464,16 @@ def _parsear_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--planilha",
-        required=True,
+        default=None,
         help="Caminho para o arquivo Excel ou CSV de notas (template fixo).",
+    )
+    parser.add_argument(
+        "--turma-dir",
+        default=None,
+        dest="turma_dir",
+        help="Diretório com planilhas multi-abas (geradas por gerador_planilhas.py). "
+             "Compila automaticamente e usa como planilha de entrada. "
+             "Mutuamente exclusivo com --planilha.",
     )
     parser.add_argument(
         "--lote-id",
@@ -526,6 +537,46 @@ def _parsear_args() -> argparse.Namespace:
 def main() -> None:
     args = _parsear_args()
     cliente = None
+
+    # Validação: --planilha ou --turma-dir (um dos dois, não ambos)
+    if args.turma_dir and args.planilha:
+        _erro("Use --planilha OU --turma-dir, não ambos.")
+        sys.exit(2)
+    if not args.turma_dir and not args.planilha:
+        _erro("Informe --planilha ou --turma-dir.")
+        sys.exit(2)
+
+    # Se --turma-dir: compila planilhas multi-abas num XLSX temporário
+    if args.turma_dir:
+        _titulo("PRÉ-ETAPA — Compilando planilhas de turma")
+        try:
+            from compilador_turma import compilar_diretorio
+            import tempfile
+
+            turma_dir = Path(args.turma_dir)
+            if not turma_dir.is_dir():
+                _erro(f"Diretório não encontrado: {args.turma_dir}")
+                sys.exit(2)
+
+            tmp_dir = tempfile.mkdtemp()
+            compilados = compilar_diretorio(str(turma_dir), tmp_dir)
+            if not compilados:
+                _erro("Nenhuma planilha compilada com sucesso no diretório.")
+                sys.exit(2)
+
+            dfs = [pd.read_excel(str(f), dtype=str) for f in compilados]
+            merged = pd.concat(dfs, ignore_index=True)
+            merged_path = Path(tmp_dir) / "turmas_compiladas.xlsx"
+            merged.to_excel(str(merged_path), index=False)
+            args.planilha = str(merged_path)
+            _ok(f"Turmas compiladas: {len(compilados)} arquivo(s), {len(merged)} linhas")
+        except ImportError:
+            _erro("compilador_turma.py não encontrado. Instale o módulo para usar --turma-dir.")
+            sys.exit(5)
+        except Exception as exc:
+            _erro(f"Erro ao compilar turmas: {exc}")
+            log.exception("Erro em compilar_diretorio")
+            sys.exit(2)
 
     try:
         # ------------------------------------------------------------------
