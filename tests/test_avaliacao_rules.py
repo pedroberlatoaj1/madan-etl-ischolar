@@ -99,3 +99,47 @@ def test_ponto_extra_nao_permite_negativo():
     with pytest.raises(ValueError, match="Ponto extra negativo"):
         ar.aplicar_ponto_extra_em_av1(9.0, -0.5)
 
+
+# ---------------------------------------------------------------------------
+# Testes de consolidar_obj_disc — policy "soma" (regra oficial Madan)
+# ---------------------------------------------------------------------------
+
+def test_consolidar_obj_disc_soma_simples():
+    """Regra oficial: AV1/AV2 = OBJ + DISC (soma simples)."""
+    assert ar.consolidar_obj_disc(4, 5) == 9.0
+    assert ar.consolidar_obj_disc(3, 4) == 7.0
+    assert ar.consolidar_obj_disc(0, 0) == 0.0
+    assert ar.consolidar_obj_disc(5, 5) == 10.0
+
+
+def test_consolidar_obj_disc_soma_ultrapassa_10_gera_erro():
+    """Se OBJ + DISC > 10, o sistema deve bloquear com erro claro."""
+    with pytest.raises(ValueError, match="ultrapassa 10"):
+        ar.consolidar_obj_disc(6, 5)
+    with pytest.raises(ValueError, match="ultrapassa 10"):
+        ar.consolidar_obj_disc(8, 9)
+
+
+def test_consolidar_obj_disc_soma_apenas_um_presente():
+    """Se apenas OBJ ou DISC existir, usa esse valor diretamente."""
+    assert ar.consolidar_obj_disc(7, None) == 7.0
+    assert ar.consolidar_obj_disc(None, 8) == 8.0
+    assert ar.consolidar_obj_disc("", 6) == 6.0
+
+
+def test_consolidar_obj_disc_soma_ambos_ausentes():
+    """Se nenhum existir, retorna None."""
+    assert ar.consolidar_obj_disc(None, None) is None
+    assert ar.consolidar_obj_disc("", "") is None
+
+
+def test_consolidar_obj_disc_policy_media_simples_legado():
+    """Policy media_simples mantida por compatibilidade."""
+    assert ar.consolidar_obj_disc(8, 6, policy="media_simples") == 7.0
+
+
+def test_consolidar_obj_disc_default_policy_e_soma():
+    """O default deve ser 'soma', não 'media_simples'."""
+    # 4 + 5 = 9 (soma), não 4.5 (média)
+    assert ar.consolidar_obj_disc(4, 5) == 9.0
+

@@ -82,8 +82,8 @@ def test_lote_elegivel_ainda_fica_aguardando_sem_aprovar_automatico():
             "Trimestre": "1",
             "Disciplina": "Mat",
             "Turma": "T2",
-            "AV 1 (OBJ)": "8",
-            "AV 1 (DISÇ)": "8",
+            "AV 1 (OBJ)": "4",
+            "AV 1 (DISÇ)": "4",
             "Simulado": "10",
         }
     ]
@@ -101,9 +101,9 @@ def test_aprovacao_explicita_registra_aprovador_timestamp_e_snapshot():
             "Estudante": "Aluno 3",
             "Trimestre": "1",
             "Disciplina": "Mat",
-            "Turma": "T3",
-            "AV 1 (OBJ)": "8",
-            "AV 1 (DISÇ)": "9",
+            "Turma": "2A",
+            "AV 1 (OBJ)": "4",
+            "AV 1 (DISÇ)": "5",
             "Ponto extra": "1",
         }
     ]
@@ -131,8 +131,8 @@ def test_rejeicao_registra_rejeitador_timestamp_motivo():
             "Trimestre": "1",
             "Disciplina": "Hist",
             "Turma": "T4",
-            "AV 1 (OBJ)": "8",
-            "AV 1 (DISÇ)": "8",
+            "AV 1 (OBJ)": "4",
+            "AV 1 (DISÇ)": "4",
         }
     ]
     res = _validar_lote(rows)
@@ -153,8 +153,8 @@ def test_resumo_lote_consolida_contagens_basicas():
             "Trimestre": "1",
             "Disciplina": "Mat",
             "Turma": "T5",
-            "AV 1 (OBJ)": "8",
-            "AV 1 (DISÇ)": "8",
+            "AV 1 (OBJ)": "4",
+            "AV 1 (DISÇ)": "4",
             "Simulado": "10",
         },
         {
@@ -162,8 +162,8 @@ def test_resumo_lote_consolida_contagens_basicas():
             "Trimestre": "1",
             "Disciplina": "Fis",
             "Turma": "T5",
-            "AV 1 (OBJ)": "9",
-            "AV 1 (DISÇ)": "9",
+            "AV 1 (OBJ)": "4",
+            "AV 1 (DISÇ)": "5",
         },
     ]
     res = _validar_lote(rows)
@@ -245,8 +245,8 @@ def test_elegibilidade_lote_limpo_e_elegivel():
             "Trimestre": "1",
             "Disciplina": "Arte",
             "Turma": "TOk",
-            "AV 1 (OBJ)": "8",
-            "AV 1 (DISÇ)": "8",
+            "AV 1 (OBJ)": "4",
+            "AV 1 (DISÇ)": "4",
         }
     ]
     res = _validar_lote(rows)
@@ -276,8 +276,8 @@ def test_persistencia_criar_e_carregar():
             "Trimestre": "1",
             "Disciplina": "Mat",
             "Turma": "TP1",
-            "AV 1 (OBJ)": "7",
-            "AV 1 (DISÇ)": "7",
+            "AV 1 (OBJ)": "3",
+            "AV 1 (DISÇ)": "4",
         }
     ]
     res = _validar_lote(rows)
@@ -305,8 +305,8 @@ def test_persistencia_aprovacao_sobrevive_releitura():
             "Trimestre": "1",
             "Disciplina": "Fis",
             "Turma": "TP2",
-            "AV 1 (OBJ)": "9",
-            "AV 1 (DISÇ)": "9",
+            "AV 1 (OBJ)": "4",
+            "AV 1 (DISÇ)": "5",
         }
     ]
     res = _validar_lote(rows)
@@ -335,9 +335,9 @@ def test_persistencia_rejeicao_sobrevive_releitura():
             "Estudante": "Aluno P3",
             "Trimestre": "1",
             "Disciplina": "Quim",
-            "Turma": "TP3",
-            "AV 1 (OBJ)": "6",
-            "AV 1 (DISÇ)": "6",
+            "Turma": "TP2",
+            "AV 1 (OBJ)": "3",
+            "AV 1 (DISÇ)": "3",
         }
     ]
     res = _validar_lote(rows)
@@ -390,8 +390,8 @@ def test_snapshot_hash_e_gerado_na_aprovacao():
             "Trimestre": "1",
             "Disciplina": "Geo",
             "Turma": "TH1",
-            "AV 1 (OBJ)": "8",
-            "AV 1 (DISÇ)": "8",
+            "AV 1 (OBJ)": "4",
+            "AV 1 (DISÇ)": "4",
         }
     ]
     res = _validar_lote(rows)
@@ -417,8 +417,8 @@ def test_verificar_integridade_snapshot_ok():
             "Trimestre": "1",
             "Disciplina": "Bio",
             "Turma": "TH2",
-            "AV 1 (OBJ)": "9",
-            "AV 1 (DISÇ)": "9",
+            "AV 1 (OBJ)": "4",
+            "AV 1 (DISÇ)": "5",
         }
     ]
     res = _validar_lote(rows)
@@ -439,9 +439,9 @@ def test_verificar_integridade_snapshot_detecta_adulteracao():
             "Estudante": "Aluno H3",
             "Trimestre": "1",
             "Disciplina": "Fis",
-            "Turma": "TH3",
-            "AV 1 (OBJ)": "7",
-            "AV 1 (DISÇ)": "7",
+            "Turma": "TH2",
+            "AV 1 (OBJ)": "3",
+            "AV 1 (DISÇ)": "4",
         }
     ]
     res = _validar_lote(rows)
@@ -466,8 +466,8 @@ def test_verificar_integridade_sem_aprovacao_retorna_false():
             "Trimestre": "1",
             "Disciplina": "Mat",
             "Turma": "TH4",
-            "AV 1 (OBJ)": "8",
-            "AV 1 (DISÇ)": "8",
+            "AV 1 (OBJ)": "4",
+            "AV 1 (DISÇ)": "4",
         }
     ]
     res = _validar_lote(rows)
@@ -490,8 +490,8 @@ def test_snapshot_congelado_persistencia_integra():
             "Trimestre": "1",
             "Disciplina": "Hist",
             "Turma": "TH5",
-            "AV 1 (OBJ)": "8",
-            "AV 1 (DISÇ)": "8",
+            "AV 1 (OBJ)": "4",
+            "AV 1 (DISÇ)": "4",
         }
     ]
     res = _validar_lote(rows)

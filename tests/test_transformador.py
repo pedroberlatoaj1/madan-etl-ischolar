@@ -112,11 +112,11 @@ def test_linha_madan_para_lancamentos_gera_multiplos_auditaveis_e_preserva_obj_d
         "Trimestre": "1",
         "Disciplina": "Matemática",
         "Frente - Professor": "Frente X - Prof Y",
-        "Turma": "T1",
-        "AV 1 (OBJ)": "8,0",
-        "AV 1 (DISÇ)": "9",
-        "AV 2 (OBJ)": "6",
-        "AV 2 (DISÇ)": "8",
+        "Turma": "1A",
+        "AV 1 (OBJ)": "4",
+        "AV 1 (DISÇ)": "5",
+        "AV 2 (OBJ)": "3",
+        "AV 2 (DISÇ)": "4",
         "AV 3 (listas)": "7",
         "AV 3 (avaliação)": "6",
         "Simulado": "10",
@@ -133,18 +133,18 @@ def test_linha_madan_para_lancamentos_gera_multiplos_auditaveis_e_preserva_obj_d
     assert len(av1_subs) == 2
     assert {x["subcomponente"] for x in av1_subs} == {"obj", "disc"}
 
-    # AV1 consolidada existe, é ponderada e reflete ponto extra com teto 10
+    # AV1 consolidada: soma(4+5)=9, +ponto extra 1 = 10.0 (teto)
     av1_cons = [x for x in lancs if x["componente"] == "av1" and x.get("peso_avaliacao") is not None]
     assert len(av1_cons) == 1
     assert av1_cons[0]["status"] == "pronto"
-    assert av1_cons[0]["nota_ajustada_0a10"] == 9.5  # média (8 e 9) = 8.5; +1 => 9.5
-    assert av1_cons[0]["valor_ponderado"] == 8.55  # peso 9 no cenário com nivelamento
+    assert av1_cons[0]["nota_ajustada_0a10"] == 10.0  # soma(4+5)=9; +1 => 10.0
+    assert av1_cons[0]["valor_ponderado"] == 9.0  # peso 9 no cenário com nivelamento: (10/10)*9
 
-    # AV2 consolidada existe e é ponderada
+    # AV2 consolidada: soma(3+4)=7
     av2_cons = [x for x in lancs if x["componente"] == "av2" and x.get("peso_avaliacao") is not None]
     assert len(av2_cons) == 1
     assert av2_cons[0]["status"] == "pronto"
-    assert av2_cons[0]["nota_ajustada_0a10"] == 7.0  # média simples
+    assert av2_cons[0]["nota_ajustada_0a10"] == 7.0  # soma simples
     assert av2_cons[0]["peso_avaliacao"] == 9.0  # cenário com nivelamento (t1)
     assert av2_cons[0]["valor_ponderado"] == 6.3
 
@@ -183,9 +183,9 @@ def test_consolidacao_av2_obj_disc_gera_lancamento_consolidado_ponderado():
         "Estudante": "Aluno 3",
         "Trimestre": "3",
         "Disciplina": "Física",
-        "Turma": "T3",
-        "AV 2 (OBJ)": "6",
-        "AV 2 (DISÇ)": "8",
+        "Turma": "2C",
+        "AV 2 (OBJ)": "3",
+        "AV 2 (DISÇ)": "4",
         "Simulado": "",
     }
     lancs = linha_madan_para_lancamentos(row, linha_origem=4)
@@ -196,7 +196,7 @@ def test_consolidacao_av2_obj_disc_gera_lancamento_consolidado_ponderado():
     av2_cons = [x for x in lancs if x["componente"] == "av2" and x.get("peso_avaliacao") is not None]
     assert len(av2_cons) == 1
     assert av2_cons[0]["status"] == "pronto"
-    assert av2_cons[0]["nota_ajustada_0a10"] == 7.0  # média simples
+    assert av2_cons[0]["nota_ajustada_0a10"] == 7.0  # soma simples 3+4=7
     assert av2_cons[0]["peso_avaliacao"] == 18.0  # 3º tri sem nivelamento
     assert av2_cons[0]["valor_ponderado"] == 12.6
 
@@ -213,8 +213,8 @@ def test_ra_propagado_para_todos_os_lancamentos():
         "Turma": "2A",
         "Trimestre": "1",
         "Disciplina": "Matemática",
-        "AV 1 (OBJ)": "8",
-        "AV 1 (DISC)": "8",
+        "AV 1 (OBJ)": "4",
+        "AV 1 (DISC)": "4",
         "Simulado": "9",
     }
     lancs = linha_madan_para_lancamentos(row, linha_origem=1)
@@ -233,8 +233,8 @@ def test_ra_ausente_resulta_em_none_nos_lancamentos():
         "Turma": "2A",
         "Trimestre": "1",
         "Disciplina": "Física",
-        "AV 1 (OBJ)": "7",
-        "AV 1 (DISC)": "7",
+        "AV 1 (OBJ)": "3",
+        "AV 1 (DISC)": "4",
     }
     lancs = linha_madan_para_lancamentos(row, linha_origem=2)
 
@@ -252,8 +252,8 @@ def test_ra_vazio_resulta_em_none_nos_lancamentos():
         "Turma": "2A",
         "Trimestre": "1",
         "Disciplina": "Química",
-        "AV 1 (OBJ)": "9",
-        "AV 1 (DISC)": "9",
+        "AV 1 (OBJ)": "4",
+        "AV 1 (DISC)": "5",
     }
     lancs = linha_madan_para_lancamentos(row, linha_origem=3)
 
@@ -270,19 +270,19 @@ def test_ra_presente_no_hash_conteudo():
     row_com_ra = {
         "Estudante": "Aluno X",
         "RA": "RA001",
-        "Turma": "T1",
+        "Turma": "1A",
         "Trimestre": "1",
         "Disciplina": "Mat",
-        "AV 1 (OBJ)": "8",
-        "AV 1 (DISC)": "8",
+        "AV 1 (OBJ)": "4",
+        "AV 1 (DISC)": "4",
     }
     row_sem_ra = {
         "Estudante": "Aluno X",
-        "Turma": "T1",
+        "Turma": "1A",
         "Trimestre": "1",
         "Disciplina": "Mat",
-        "AV 1 (OBJ)": "8",
-        "AV 1 (DISC)": "8",
+        "AV 1 (OBJ)": "4",
+        "AV 1 (DISC)": "4",
     }
     lancs_com = linha_madan_para_lancamentos(row_com_ra, linha_origem=1)
     lancs_sem = linha_madan_para_lancamentos(row_sem_ra, linha_origem=1)
@@ -294,3 +294,45 @@ def test_ra_presente_no_hash_conteudo():
     assert av1_com["hash_conteudo"] != av1_sem["hash_conteudo"], (
         "RA faz parte do contexto: hashes devem diferir quando RA muda"
     )
+
+
+# ---------------------------------------------------------------------------
+# Testes de bloqueio de 3ª série
+# ---------------------------------------------------------------------------
+
+def test_terceira_serie_bloqueada_com_status_e_motivo():
+    """Aluno do 3º ano deve gerar lançamento único com status 'bloqueado'."""
+    row = {
+        "Estudante": "Aluno 3ª Série",
+        "RA": "RA3001",
+        "Turma": "3A",
+        "Trimestre": "1",
+        "Disciplina": "Matemática",
+        "AV 1 (OBJ)": "5",
+        "AV 1 (DISC)": "4",
+        "Simulado": "8",
+    }
+    lancs = linha_madan_para_lancamentos(row, linha_origem=10)
+
+    assert len(lancs) == 1
+    assert lancs[0]["status"] == "bloqueado"
+    assert "serie_3_nao_suportada" in lancs[0]["motivo_status"]
+    assert lancs[0]["componente"] == "todos"
+
+
+def test_primeira_e_segunda_serie_nao_bloqueadas():
+    """Alunos do 1º e 2º ano devem ser processados normalmente (sem bloqueio)."""
+    for turma in ("1A", "2B"):
+        row = {
+            "Estudante": "Aluno OK",
+            "RA": "RA100",
+            "Turma": turma,
+            "Trimestre": "1",
+            "Disciplina": "Física",
+            "AV 1 (OBJ)": "3",
+            "AV 1 (DISC)": "4",
+        }
+        lancs = linha_madan_para_lancamentos(row, linha_origem=1)
+
+        bloqueados = [l for l in lancs if l.get("status") == "bloqueado"]
+        assert bloqueados == [], f"Turma {turma} não deveria ser bloqueada"

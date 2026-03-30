@@ -330,9 +330,11 @@ O payload oficial de envio (POST `/notas/lanca_nota`) usa:
 
 ### 7.5 O que ainda depende de validação em homologação
 
-- confirmação visual dos shapes reais com dados ao vivo (shapes já confirmados via documentação, pendente sanity check com token real);
-- confirmação se `id_avaliacao` varia por disciplina, turma, trimestre ou aluno;
-- confirmação se `id_professor` é obrigatório para a escola Madan.
+- ~~shape real das respostas~~ → **Parcialmente validado** (shapes de `/aluno/busca` e `/matricula/listar` confirmados; `/diario/notas` bloqueado para tokens de integração);
+- ~~critério formal para desempate de matrícula ambígua~~ → **Resolvido** (heurística por `status_matricula_diario == "MATRICULADO"` implementada);
+- ~~confirmação se `id_avaliacao` varia por trimestre~~ → **Confirmado** (IDs diferentes por trimestre, coletados manualmente da interface web do iScholar);
+- confirmação se `id_professor` é obrigatório para a escola Madan → **Pendente**;
+- POST real em homologação → **Pendente** (dry-run já passa com sucesso).
 
 ---
 
@@ -455,7 +457,22 @@ O `cli_envio.py` é o orquestrador oficial do fluxo novo.
 8. Enviar (dry-run ou real);
 9. Imprimir resultado final.
 
-### 10.2 Exit codes
+### 10.2 Flag `--turma-dir`
+
+O CLI aceita `--turma-dir` como alternativa a `--planilha` para processamento batch de planilhas por turma:
+
+```bash
+python cli_envio.py --turma-dir planilhas/ --lote-id t1-2026 --dry-run
+```
+
+Quando usado:
+1. Compila automaticamente cada `.xlsx` multi-abas (gerado por `gerador_planilhas.py`) via `compilador_turma.py`
+2. Concatena todos os resultados num único DataFrame
+3. Prossegue com o fluxo normal (ETAPAs 1-9)
+
+Mutuamente exclusivo com `--planilha`.
+
+### 10.3 Exit codes
 
 | Código | Significado |
 |--------|-------------|
@@ -527,7 +544,7 @@ Com os novos endpoints, o discovery pode também chamar:
 
 Isso elimina a necessidade de preencher manualmente os mapas de disciplinas e professores — basta revisar os nomes normalizados gerados.
 
-> **Limitação:** Não existe endpoint equivalente para avaliações. O `mapa_avaliacoes.json` ainda precisa ser preenchido com IDs obtidos via `/diario/notas` ou interface web do iScholar.
+> **Limitação atual:** O endpoint `GET /diario/notas` está **bloqueado para tokens de integração** (retorna "Matricula inexistente ou não vinculada ao requisitante"). Isso significa que os IDs de avaliação não podem ser obtidos automaticamente via API — foram coletados manualmente da interface web do iScholar (sistema avaliativo ID=9). Não existe endpoint separado para listar avaliações.
 
 ---
 
@@ -548,13 +565,16 @@ Variáveis principais:
 |----------|-------------|-----------|
 | `ISCHOLAR_BASE_URL` | Sim | `https://api.ischolar.app` (mesma para homologação e produção) |
 | `ISCHOLAR_API_TOKEN` | Sim | Token gerado na interface do iScholar |
-| `ISCHOLAR_CODIGO_ESCOLA` | Sim | `madan_homolog` (homologação) ou código real (produção) |
+| `ISCHOLAR_CODIGO_ESCOLA` | Sim | `madan` (valor do campo `escola` no JWT do token) |
 
 ### 13.2 Ambientes
 
-- **Homologação:** `ISCHOLAR_CODIGO_ESCOLA=madan_homolog`, interface em `https://madan_homolog.ischolar.com.br/`
-- **Produção:** código real da escola, mesmo `ISCHOLAR_BASE_URL`
-- **Nunca configure ambos ao mesmo tempo.**
+- **Produção/Homologação Madan:** `ISCHOLAR_CODIGO_ESCOLA=madan` (valor extraído do payload JWT do token gerado). Interface em `https://madan.ischolar.com.br/`.
+- O valor de `ISCHOLAR_CODIGO_ESCOLA` deve corresponder ao campo `"escola"` presente no payload JWT do token de integração.
+- A `ISCHOLAR_BASE_URL` é a mesma para qualquer ambiente: `https://api.ischolar.app`.
+- **Nunca configure múltiplos ambientes ao mesmo tempo.**
+
+> **Nota:** Inicialmente assumiu-se `madan_homolog` como código da escola em homologação, mas o JWT real gerado contém `"escola":"madan"`. Use sempre o valor do JWT.
 
 ---
 
@@ -577,7 +597,22 @@ Variáveis principais:
 - suporte a dry-run;
 - script de discovery de IDs;
 - autopreenchimento de mapas via API;
-- 265 testes automatizados passando.
+- AV1/AV2 consolidados por soma simples (OBJ + DISC ≤ 10), confirmado pelo pedagógico;
+- 3ª série bloqueada explicitamente (`status=bloqueado`, com motivo claro);
+- regras de recuperação trimestral (T1/T2) e final implementadas, com exceção de T3;
+- rendimento anual por média ponderada 30-30-40 implementado;
+- registro de 37 professores (`professores_madan.py`) transcrito do PDF oficial;
+- cross-validation professor × disciplina × turma com aviso não-bloqueante;
+- status e motivo_status centralizados em `StatusLancamento` e `MotivoStatus` em `avaliacao_rules.py`;
+- `gerador_planilhas.py` — geração automatizada de planilhas Excel multi-abas por turma com dados pré-preenchidos;
+- `compilador_turma.py` — compilação de planilhas multi-abas para o formato pipeline (1 linha = 1 aluno × 1 disciplina);
+- flag `--turma-dir` no CLI para processamento batch de planilhas por turma;
+- 402 testes automatizados passando;
+- **[2026-03-28] `mapa_disciplinas.json` preenchido com 16 IDs reais** coletados da interface web do iScholar (Coordenação → Disciplinas);
+- **[2026-03-28] `mapa_avaliacoes.json` preenchido com 19 IDs reais** (92–110) do sistema avaliativo ID=9 "ENSINO MÉDIO (1ª E 2ª SÉRIE) - 2026", incluindo metadados de BIM1–BIM7;
+- **[2026-03-28] `mapa_professores.json` preenchido com 25 IDs reais** de professores, organizados em 114 chaves (aliases por frente: "matematica a", "fisica b", etc.);
+- **[2026-03-28] Auto-detecção de header** em `cli_envio.py`: tenta `header=0` primeiro; se colunas obrigatórias não forem encontradas, tenta `header=1` automaticamente (planilha Madan tem linha de cabeçalho mesclada);
+- **[2026-03-28] Dry-run passando com sucesso** em todas as 8 ETAPAs com planilha de teste de 10 linhas × 3 alunos × 7 disciplinas (30 itens sendáveis, 0 erros).
 
 ### 14.2 Hardening concluído
 
@@ -610,30 +645,34 @@ Todos mantêm conexão compartilhada por instância em `:memory:` e preservam o 
 - não faz POST real;
 - ainda pode exigir credenciais, mapas e resolução de IDs.
 
+**Auto-detecção de header na planilha Excel:**
+
+- `_carregar_planilha()` tenta `header=0` primeiro;
+- se nenhuma coluna obrigatória for encontrada (planilha Madan com célula mesclada "DADOS OBRIGATÓRIOS" na linha 1), faz retry com `header=1`;
+- solução robusta que funciona tanto com planilha modelo (header na linha 1) quanto com planilha Madan real (header na linha 2).
+
 ### 14.3 Provisório / sujeito a validação
 
-- confirmação visual dos shapes reais com dados ao vivo (pendente token);
+- ~~comportamento exato de resolução de aluno e matrícula com a resposta real da API~~ → **Validado** (shapes de `/aluno/busca` e `/matricula/listar` confirmados com API real);
+- ~~shape final dos mapas conforme ambiente real do Madan~~ → **Validado** (3 mapas preenchidos com IDs reais, dry-run passa);
 - parte da semântica pedagógica ainda dependente de validação operacional;
-- procedimento formal de retry/reprocessamento em produção.
+- procedimento formal de retry/reprocessamento em produção;
+- **POST real em homologação** → **Pendente** (dry-run OK, próximo passo é envio real com 1–3 alunos);
+- **Teste de idempotência** → **Pendente** (reenviar mesmo lote para confirmar que não duplica notas).
 
 ### 14.4 Depende do TI do iScholar
 
-- ~~acesso ao ambiente de homologação~~ → **Resolvido** (`madan_homolog`);
-- ~~credenciais e código da escola de teste~~ → **Parcialmente resolvido** (código = `madan_homolog`, token a gerar pelo operador);
-- ~~shape de `/aluno/busca`~~ → **Resolvido** (confirmado via documentação oficial da API);
-- ~~shape de `/matricula/listar`~~ → **Resolvido** (confirmado via documentação oficial da API);
-- ~~forma de obter `id_disciplina`~~ → **Resolvido** (endpoint `GET /disciplinas` confirmado);
-- ~~forma de obter `id_professor`~~ → **Resolvido** (endpoint `GET /funcionarios/professores` confirmado);
-- ~~diferenças entre homologação e produção~~ → **Resolvido** (mesma URL, só muda `X-Codigo-Escola`);
-- confirmação se `id_professor` é obrigatório para a escola Madan → **Pendente**;
-- confirmação se `id_avaliacao` varia por disciplina/turma/trimestre → **Pendente**.
+- ~~acesso ao ambiente de homologação~~ → **Resolvido** (código escola = `madan`, extraído do JWT);
+- ~~credenciais e código da escola de teste~~ → **Resolvido** (token de integração gerado, `ISCHOLAR_CODIGO_ESCOLA=madan`);
+- ~~shapes reais das respostas~~ → **Parcialmente validado** (`/aluno/busca` e `/matricula/listar` confirmados; `/diario/notas` bloqueado para tokens de integração — não afeta o envio);
+- confirmação se `id_professor` é obrigatório para a escola Madan → **Pendente** (funciona sem, mas precisa confirmação formal).
 
 ### 14.5 Depende do Madan
 
-- adoção formal do template fixo;
+- ~~adoção formal do template fixo~~ → **Em andamento** (planilha modelo gerada e preenchida com dados reais);
 - garantia de preenchimento do RA;
 - fechamento final das regras pedagógicas ainda provisórias;
-- definição do piloto controlado;
+- **piloto controlado** → **Próximo passo** (enviar notas de 1–3 alunos reais e verificar no diário do iScholar);
 - política operacional de exceções.
 
 ---
@@ -648,12 +687,10 @@ O sistema já implementa regras pedagógicas explícitas e auditáveis, em vez d
 
 As seguintes frentes ainda exigem validação final do Madan ou confirmação operacional:
 
-- consolidação final de AV1 OBJ + AV1 DISC;
-- consolidação final de AV2 OBJ + AV2 DISC;
-- política final de AV3 incompleta;
-- política final de Recuperação;
-- política final de Ponto extra em casos de borda;
-- como essas regras devem aparecer no diário do iScholar.
+- política final de AV3 incompleta (quando apenas listas ou apenas avaliação estão presentes);
+- política final de Ponto extra em casos de borda (avaliação "fechada");
+- como as regras de recuperação devem aparecer no diário do iScholar;
+- ~~IDs reais de professores no `mapa_professores.json`~~ → **Resolvido** (25 IDs reais preenchidos; 10 aliases permanecem com ID=0 — professores que não lecionam para 1ª/2ª série).
 
 O projeto prefere:
 
@@ -715,9 +752,12 @@ e evita heurísticas silenciosas perigosas.
 
 - `cli_envio.py` — orquestrador principal
 - `madan_planilha_mapper.py` — mapeamento e validação do template
-- `avaliacao_rules.py` — regras pedagógicas
+- `avaliacao_rules.py` — regras pedagógicas + `StatusLancamento` + `MotivoStatus`
 - `transformador.py` — transformação canônica
-- `validacao_pre_envio.py` — validação pré-envio
+- `validacao_pre_envio.py` — validação pré-envio com cross-validation de professor
+- `professores_madan.py` — registro de 37 professores do PDF + busca + validação
+- `gerador_planilhas.py` — geração de planilhas multi-abas por turma (1 aba por disciplina-frente-professor)
+- `compilador_turma.py` — compilação de planilhas multi-abas → formato pipeline
 - `aprovacao_lote.py` — controle de lote e aprovação
 - `aprovacao_lote_store.py` — persistência de aprovações (SQLite)
 - `lote_itens_store.py` — persistência de itens aprovados (SQLite)
@@ -755,19 +795,23 @@ e evita heurísticas silenciosas perigosas.
 
 ## 20. Cobertura de testes
 
-O projeto possui **265 testes automatizados** organizados em:
+O projeto possui **402 testes automatizados** organizados em:
 
 | Suite | Cobertura |
 |-------|-----------|
 | `test_ischolar_client.py` | Sync idempotente, conflitos, fallbacks legados |
 | `test_resolvedor_ids_ischolar.py` | Resolução de IDs, mapas, fail-closed |
 | `test_cli_envio.py` | Fluxo completo do CLI, exit codes |
-| `test_transformador.py` | Transformação canônica |
-| `test_validacao_pre_envio.py` | Validação pré-envio |
+| `test_transformador.py` | Transformação canônica, consolidação AV1/AV2, bloqueio 3ª série |
+| `test_validacao_pre_envio.py` | Validação pré-envio, cross-validation de professor |
 | `test_aprovacao_lote.py` | Aprovação, elegibilidade, snapshot |
 | `test_madan_planilha_mapper.py` | Template, colunas, aliases |
 | `test_avaliacao_rules.py` | Regras pedagógicas |
 | `test_novos_endpoints.py` | Novos endpoints, envelope "dados", fallback pega_alunos, autopreenchimento de mapas, coerção int/string |
+| `test_professores_madan.py` | Registro de professores, busca, siglas, validação cruzada |
+| `test_recuperacao.py` | Regras de recuperação trimestral/final, rendimento anual ponderado |
+| `test_gerador_planilhas.py` | Geração de planilhas multi-abas, roster CSV, metadata, proteção de colunas |
+| `test_compilador_turma.py` | Compilação multi-abas → pipeline, round-trip, formato de saída |
 | `test_alertas.py` | Alertas operacionais |
 | `test_snapshot_store.py` | Persistência de snapshots |
 | `test_job_store.py` | Persistência de jobs |
@@ -790,8 +834,34 @@ Este projeto já possui:
 - fallback robusto para resolução de IDs;
 - autopreenchimento de mapas via API;
 - script de discovery para homologação;
-- 265 testes automatizados passando;
+- regras pedagógicas de AV1/AV2, recuperação e bloqueio de 3ª série confirmadas e implementadas;
+- registro de 37 professores integrado com cross-validation;
+- geração automatizada de planilhas por turma e compilação para formato pipeline;
+- flag `--turma-dir` no CLI para processamento batch de turmas;
+- 402 testes automatizados passando;
 - base técnica suficiente para validar a integração real.
 
-O que ainda falta não é "escrever o pipeline do zero".
-O que falta é fechar a integração real e as decisões operacionais externas para transformar esse pipeline em rotina confiável de produção.
+### 21.1 Estado em 2026-03-28
+
+**Marcos alcançados:**
+
+- **3 mapas JSON preenchidos com IDs reais** do iScholar (disciplinas, avaliações, professores) — coletados manualmente da interface web;
+- **Dry-run passando em todas as 8 ETAPAs** com planilha de teste real (10 linhas, 3 alunos, 7 disciplinas);
+- **Token de integração ativo** com `ISCHOLAR_CODIGO_ESCOLA=madan`;
+- **Auto-detecção de header** implementada para planilhas com célula mesclada no cabeçalho;
+- **Sistema avaliativo mapeado** — ID=9 "ENSINO MÉDIO (1ª E 2ª SÉRIE) - 2026", 3 trimestres (30-30-40), 5 avaliações por trimestre, 3 recuperações + final.
+
+**O que falta para finalizar:**
+
+| # | Item | Estimativa | Bloqueante? |
+|---|------|------------|-------------|
+| 1 | POST real em homologação (1–3 alunos) | 10 min | Sim |
+| 2 | Verificar nota no diário do iScholar | 5 min | Sim |
+| 3 | Teste de idempotência (reenviar mesmo lote) | 5 min | Sim |
+| 4 | Confirmar se `id_professor` é obrigatório | 5 min | Não (funciona sem) |
+| 5 | Envio de lote maior (10+ alunos) | 15 min | Não |
+| 6 | Documentar procedimento operacional final | 30 min | Não |
+
+**Estimativa total para finalização: ~1–2 horas de trabalho operacional.**
+
+O pipeline está **tecnicamente completo**. O que resta é validação operacional (POST real + confirmação visual no iScholar) e ajustes finos baseados no resultado.

@@ -407,6 +407,13 @@ def _extrair_id_aluno_da_resposta(dados: Any) -> Optional[int]:
                 r = _de_dict(conteudo)
                 if r is not None:
                     return r
+                # Tenta sub-envelopes conhecidos (dois níveis — ex: dados.informacoes_basicas)
+                for sub_env in ("informacoes_basicas", "aluno", "data"):
+                    sub = conteudo.get(sub_env)
+                    if isinstance(sub, dict):
+                        r = _de_dict(sub)
+                        if r is not None:
+                            return r
             elif isinstance(conteudo, list):
                 r = _de_lista(conteudo)
                 if r is not None:
@@ -620,7 +627,73 @@ class ResolvedorIDsHibrido(ResolvedorIDsAbstrato):
         }
 
         if not lista.sucesso or lista.id_matricula_resolvido is None:
-            # Client já distingue: múltiplos distintos → mensagem de ambiguidade
+            # ----------------------------------------------------------------
+            # Heurística de desambiguação — acionada quando múltiplos
+            # id_matricula distintos são retornados pela API.
+            #
+            # Tentativa 2: filtro por situacao="cursando"
+            # Tentativa 3: campo status_matricula_diario == "MATRICULADO"
+            #              no payload bruto do primeiro resultado sem filtro.
+            # ----------------------------------------------------------------
+            ids_ambiguos: list[int] = (
+                (lista.rastreabilidade or {}).get("id_matriculas_extraiados", [])
+            )
+            if len(ids_ambiguos) > 1:
+                # Tentativa 2: filtrar por situacao
+                for situacao in ("cursando", "CURSANDO"):
+                    tentativa = self._cliente.listar_matriculas(
+                        id_aluno=id_aluno_resolvido,
+                        resolver_id_matricula=True,
+                        situacao=situacao,
+                    )
+                    if tentativa.sucesso and tentativa.id_matricula_resolvido is not None:
+                        detalhes["matricula_heuristica"] = {
+                            "motivo": f"filtro_situacao={situacao}",
+                            "id_escolhido": tentativa.id_matricula_resolvido,
+                        }
+                        fonte_resolucao["id_matricula"] = (
+                            f"api:listar_matriculas+situacao={situacao}"
+                        )
+                        return tentativa.id_matricula_resolvido
+
+                # Tentativa 3: heurística por status_matricula_diario no
+                # payload bruto da chamada original (dados preservados).
+                itens_brutos: Any = lista.dados
+                if isinstance(itens_brutos, dict):
+                    for k in ("dados", "matriculas", "items", "data"):
+                        if isinstance(itens_brutos.get(k), list):
+                            itens_brutos = itens_brutos[k]
+                            break
+                if isinstance(itens_brutos, list):
+                    matriculado_id: Optional[int] = None
+                    for _item in itens_brutos:
+                        if not isinstance(_item, dict):
+                            continue
+                        id_mat = _item.get("id_matricula")
+                        if id_mat is None:
+                            continue
+                        try:
+                            id_int = int(id_mat)
+                        except (ValueError, TypeError):
+                            continue
+                        _status = str(
+                            _item.get("status_matricula_diario", "")
+                        ).upper()
+                        if _status == "MATRICULADO":
+                            matriculado_id = id_int
+                            break
+                    if matriculado_id is not None:
+                        detalhes["matricula_heuristica"] = {
+                            "motivo": "status_matricula_diario=MATRICULADO",
+                            "id_escolhido": matriculado_id,
+                            "ids_ambiguos": ids_ambiguos,
+                        }
+                        fonte_resolucao["id_matricula"] = (
+                            "api:listar_matriculas+heuristica_MATRICULADO"
+                        )
+                        return matriculado_id
+
+            # Nenhuma heurística resolveu — reportar erro
             if lista.mensagem and "múltiplos" in lista.mensagem.lower():
                 categoria = "matricula_ambigua"
             elif lista.transitorio:

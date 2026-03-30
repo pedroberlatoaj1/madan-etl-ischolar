@@ -1,69 +1,48 @@
 {
   "_schema": "mapa_avaliacoes_v1",
-  "_descricao": "Mapa de componentes avaliativos para IDs de avaliação do iScholar. Edite com os IDs reais obtidos do iScholar.",
+  "_descricao": "Mapa de componentes avaliativos para IDs de avaliação do iScholar. IDs reais coletados em 2026-03-28.",
   "_instrucoes": [
     "Cada entrada define: componente (obrigatório) + trimestre (opcional) → id_avaliacao.",
     "Lookup progressivo: tenta componente+trimestre primeiro; se não achar, tenta componente sem trimestre.",
-    "Se o iScholar usa o mesmo id_avaliacao para todos os trimestres de um componente, omita o campo 'trimestre'.",
-    "Se o iScholar usa ids diferentes por trimestre, inclua uma entrada por combinação.",
-    "Componentes canônicos: av1, av2, av3, simulado, recuperacao.",
+    "Componentes canônicos: av1, av2, av3, simulado, conceitual, recuperacao, recuperacao_final.",
     "Trimestre: string, ex: '1', '2', '3'."
   ],
-  "avaliacoes": [
-    {
-      "_comentario": "AV1 com id distinto por trimestre",
-      "componente": "av1",
-      "trimestre": "1",
-      "id_avaliacao": 201
-    },
-    {
-      "componente": "av1",
-      "trimestre": "2",
-      "id_avaliacao": 202
-    },
-    {
-      "componente": "av1",
-      "trimestre": "3",
-      "id_avaliacao": 203
-    },
-    {
-      "componente": "av2",
-      "trimestre": "1",
-      "id_avaliacao": 211
-    },
-    {
-      "componente": "av2",
-      "trimestre": "2",
-      "id_avaliacao": 212
-    },
-    {
-      "componente": "av2",
-      "trimestre": "3",
-      "id_avaliacao": 213
-    },
-    {
-      "componente": "av3",
-      "trimestre": "1",
-      "id_avaliacao": 221
-    },
-    {
-      "componente": "av3",
-      "trimestre": "2",
-      "id_avaliacao": 222
-    },
-    {
-      "componente": "av3",
-      "trimestre": "3",
-      "id_avaliacao": 223
-    },
-    {
-      "_comentario": "Simulado sem distinção de trimestre (mesmo id para todos)",
-      "componente": "simulado",
-      "id_avaliacao": 230
-    },
-    {
-      "componente": "recuperacao",
-      "id_avaliacao": 240
+  "_sistema_avaliativo": {
+    "id": 9,
+    "nome": "ENSINO MÉDIO (1ª E 2ª SÉRIE) - 2026",
+    "estrutura": {
+      "BIM1": {"nome": "1º TRIMESTRE", "valor": 30, "codigo": "BIM1", "recuperacao": false},
+      "BIM2": {"nome": "2º TRIMESTRE", "valor": 30, "codigo": "BIM2", "recuperacao": false},
+      "BIM3": {"nome": "3º TRIMESTRE", "valor": 40, "codigo": "BIM3", "recuperacao": false},
+      "BIM4": {"nome": "REC 1º TRIM",  "valor": 30, "codigo": "BIM4", "recuperacao": true},
+      "BIM5": {"nome": "REC 2º TRIM",  "valor": 30, "codigo": "BIM5", "recuperacao": true},
+      "BIM6": {"nome": "REC 3º TRIM",  "valor": 40, "codigo": "BIM6", "recuperacao": true, "_aviso": "Existe no iScholar mas NÃO é usada pela escola Madan"},
+      "BIM7": {"nome": "REC FINAL",    "valor": 30, "codigo": "BIM7", "recuperacao": true}
     }
+  },
+  "avaliacoes": [
+    {"componente": "av1",       "trimestre": "1", "id_avaliacao": 92,  "_nome_ischolar": "P1",             "_codigo": "AVA1", "_periodo": "1o TRIMESTRE (BIM1)"},
+    {"componente": "av2",       "trimestre": "1", "id_avaliacao": 93,  "_nome_ischolar": "P2",             "_codigo": "AVA2"},
+    {"componente": "av3",       "trimestre": "1", "id_avaliacao": 94,  "_nome_ischolar": "P3 (NIVELAMENTO)","_codigo": "AVA3"},
+    {"componente": "simulado",  "trimestre": "1", "id_avaliacao": 95,  "_nome_ischolar": "SIMULADO",       "_codigo": "AVA4"},
+    {"componente": "conceitual","trimestre": "1", "id_avaliacao": 96,  "_nome_ischolar": "CONCEITUAL",     "_codigo": "AVA5"},
+
+    {"componente": "av1",       "trimestre": "2", "id_avaliacao": 97,  "_nome_ischolar": "P1",             "_codigo": "AVA1", "_periodo": "2o TRIMESTRE (BIM2)"},
+    {"componente": "av2",       "trimestre": "2", "id_avaliacao": 98,  "_nome_ischolar": "P2",             "_codigo": "AVA2"},
+    {"componente": "av3",       "trimestre": "2", "id_avaliacao": 99,  "_nome_ischolar": "P3 (NIVELAMENTO)","_codigo": "AVA3"},
+    {"componente": "simulado",  "trimestre": "2", "id_avaliacao": 100, "_nome_ischolar": "SIMULADO",       "_codigo": "AVA4"},
+    {"componente": "conceitual","trimestre": "2", "id_avaliacao": 101, "_nome_ischolar": "CONCEITUAL",     "_codigo": "AVA5"},
+
+    {"componente": "av1",       "trimestre": "3", "id_avaliacao": 102, "_nome_ischolar": "P1",             "_codigo": "AVA1", "_periodo": "3o TRIMESTRE (BIM3) valor 40"},
+    {"componente": "av2",       "trimestre": "3", "id_avaliacao": 103, "_nome_ischolar": "P2",             "_codigo": "AVA2"},
+    {"componente": "simulado",  "trimestre": "3", "id_avaliacao": 104, "_nome_ischolar": "SIMULADO",       "_codigo": "AVA3"},
+    {"componente": "av3",       "trimestre": "3", "id_avaliacao": 105, "_nome_ischolar": "P3 (NIVELAMENTO)","_codigo": "AVA4"},
+    {"componente": "conceitual","trimestre": "3", "id_avaliacao": 106, "_nome_ischolar": "CONCEITUAL",     "_codigo": "AVA5"},
+
+    {"componente": "recuperacao","trimestre": "1", "id_avaliacao": 107, "_nome_ischolar": "PROVA", "_codigo": "AVA1", "_bim": "BIM4"},
+    {"componente": "recuperacao","trimestre": "2", "id_avaliacao": 108, "_nome_ischolar": "PROVA", "_codigo": "AVA1", "_bim": "BIM5"},
+    {"componente": "recuperacao","trimestre": "3", "id_avaliacao": 109, "_nome_ischolar": "PROVA", "_codigo": "AVA1", "_bim": "BIM6",
+     "_aviso": "NÃO USADA pela escola Madan — existe no iScholar mas escola não aplica REC do 3º tri"},
+    {"componente": "recuperacao_final", "id_avaliacao": 110, "_nome_ischolar": "PROVA", "_codigo": "AVA1", "_bim": "BIM7"}
   ]
 }

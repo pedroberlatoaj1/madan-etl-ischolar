@@ -35,12 +35,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Optional
 
-from avaliacao_rules import is_blank
+from avaliacao_rules import StatusLancamento, is_blank
 from madan_planilha_mapper import (
+    CAN_DISCIPLINA,
+    CAN_FRENTE_PROFESSOR,
     CAN_NOTA_COM_AV3,
     CAN_NOTA_FINAL,
     CAN_NOTA_SEM_AV3,
+    CAN_TURMA,
+    extrair_serie_da_turma,
     normalizar_linha_madan,
+)
+from professores_madan import (
+    buscar_por_nome_ou_apelido,
+    extrair_professor_da_frente,
+    validar_professor_disciplina_turma,
 )
 
 
@@ -105,12 +114,12 @@ class ComparacaoTotal:
 def _is_sendavel(l: Mapping[str, Any]) -> bool:
     """
     Heurística de "potencialmente enviável" nesta etapa (sem iScholar):
-      - status == "pronto"
+      - status == StatusLancamento.PRONTO
       - componente em {av1, av2, av3, simulado}
       - subcomponente None  →  lançamento consolidado
       - peso_avaliacao e valor_ponderado presentes
     """
-    if l.get("status") != "pronto":
+    if l.get("status") != StatusLancamento.PRONTO:
         return False
     if l.get("subcomponente") is not None:
         return False
@@ -173,7 +182,7 @@ def _validar_campos_obrigatorios_lancamento(l: Mapping[str, Any]) -> list[Issue]
     issues: list[Issue] = []
 
     # Transformador já classificou como inválido → bloqueante por definição.
-    if l.get("status") == "erro_validacao":
+    if l.get("status") == StatusLancamento.ERRO_VALIDACAO:
         issues.append(
             Issue(
                 "erro",
@@ -203,7 +212,7 @@ def _validar_campos_obrigatorios_lancamento(l: Mapping[str, Any]) -> list[Issue]
                 )
 
     # Lançamento pronto sem qualquer nota registrada.
-    if l.get("status") == "pronto":
+    if l.get("status") == StatusLancamento.PRONTO:
         if (l.get("nota_original") is None) and (l.get("nota_ajustada_0a10") is None):
             issues.append(
                 Issue("erro", "NOTA_AUSENTE",
@@ -325,6 +334,81 @@ def _comparar_totais(
 
 
 # ---------------------------------------------------------------------------
+# Validação cruzada professor ↔ disciplina ↔ turma (PDF Madan 2026)
+# ---------------------------------------------------------------------------
+
+def _validar_professor_disciplina_turma(row_normalizada: Mapping[str, Any]) -> list[Issue]:
+    """
+    Valida se o professor indicado no campo 'Frente - Professor' é compatível
+    com a disciplina e turma da linha, segundo o registro oficial do Madan.
+
+    Gera AVISOS (não bloqueia) porque:
+    - O campo pode ter formato inesperado
+    - Professores substitutos podem não estar no registro
+    - Erros de digitação na planilha são comuns
+    """
+    issues: list[Issue] = []
+
+    frente_raw = row_normalizada.get(CAN_FRENTE_PROFESSOR)
+    if is_blank(frente_raw):
+        return issues  # sem frente_professor → nada a validar
+
+    # Tenta extrair o nome do professor do campo
+    nome_prof = extrair_professor_da_frente(str(frente_raw))
+    if not nome_prof:
+        return issues
+
+    disciplina = row_normalizada.get(CAN_DISCIPLINA)
+    turma = row_normalizada.get(CAN_TURMA)
+
+    serie = extrair_serie_da_turma(turma) if turma else None
+    turma_letra = None
+    if turma and isinstance(turma, str):
+        # Extrai a letra da turma (ex: "1A" → "A", "2B" → "B")
+        for c in str(turma).strip():
+            if c.isalpha():
+                turma_letra = c.upper()
+                break
+
+    # Busca o professor no registro
+    prof = buscar_por_nome_ou_apelido(nome_prof)
+    if not prof:
+        # Professor não encontrado — pode ser substituto ou formato diferente
+        issues.append(Issue(
+            "aviso",
+            "PROFESSOR_NAO_ENCONTRADO_REGISTRO",
+            f"Professor '{nome_prof}' (de '{frente_raw}') não encontrado no "
+            f"registro oficial Madan 2026. Pode ser substituto ou formato diferente.",
+            {"frente_professor": frente_raw, "nome_extraido": nome_prof},
+        ))
+        return issues
+
+    # Valida compatibilidade com disciplina
+    if not is_blank(disciplina):
+        resultado = validar_professor_disciplina_turma(
+            nome_professor=nome_prof,
+            disciplina=str(disciplina),
+            serie=serie,
+            turma_letra=turma_letra,
+        )
+        for problema in resultado["problemas"]:
+            issues.append(Issue(
+                "aviso",
+                "PROFESSOR_DISCIPLINA_TURMA_INCOMPATIVEL",
+                problema,
+                {
+                    "frente_professor": frente_raw,
+                    "professor": prof.nome_display,
+                    "disciplina": disciplina,
+                    "turma": turma,
+                    "serie": serie,
+                },
+            ))
+
+    return issues
+
+
+# ---------------------------------------------------------------------------
 # Ponto de entrada principal
 # ---------------------------------------------------------------------------
 
@@ -364,6 +448,12 @@ def validar_pre_envio_linha(
     # --- Validação de linha (estudante) ------------------------------------
     rn = normalizar_linha_madan(row_wide)
     for it in _validar_estudante_basico(rn.get("estudante")):
+        (erros if it.severity == "erro"
+         else avisos if it.severity == "aviso"
+         else pendencias).append(it)
+
+    # --- Validação cruzada professor ↔ disciplina ↔ turma -------------------
+    for it in _validar_professor_disciplina_turma(rn):
         (erros if it.severity == "erro"
          else avisos if it.severity == "aviso"
          else pendencias).append(it)

@@ -13,6 +13,11 @@ Endpoints confirmados pelo suporte técnico iScholar:
   Resolução de IDs:
     buscar_aluno       → GET  /aluno/busca
     listar_matriculas  → GET  /matricula/listar
+    pega_alunos        → GET  /matricula/pega_alunos  (fallback: id_aluno + id_matricula juntos)
+
+  Discovery / autopreenchimento de mapas:
+    listar_disciplinas → GET  /disciplinas
+    listar_professores → GET  /funcionarios/professores
 
   Auditoria:
     listar_notas       → GET  /diario/notas
@@ -144,6 +149,51 @@ class ResultadoLancamentoNota:
     headers: Optional[dict[str, str]] = None
     payload: Optional[dict[str, Any]] = None
     rastreabilidade: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ResultadoListagemDisciplinas:
+    """Resultado de GET /disciplinas — lista de disciplinas cadastradas."""
+
+    sucesso: bool
+    status_code: Optional[int] = None
+    transitorio: bool = False
+    erro_categoria: Optional[str] = None
+    mensagem: str = ""
+    dados: Optional[Any] = None
+    disciplinas: Optional[List[Dict[str, Any]]] = None
+    endpoint_alvo: str = ""
+    params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ResultadoListagemProfessores:
+    """Resultado de GET /funcionarios/professores — lista de professores."""
+
+    sucesso: bool
+    status_code: Optional[int] = None
+    transitorio: bool = False
+    erro_categoria: Optional[str] = None
+    mensagem: str = ""
+    dados: Optional[Any] = None
+    professores: Optional[List[Dict[str, Any]]] = None
+    endpoint_alvo: str = ""
+    params: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class ResultadoPegaAlunos:
+    """Resultado de GET /matricula/pega_alunos — busca alunos com id_aluno + id_matricula."""
+
+    sucesso: bool
+    status_code: Optional[int] = None
+    transitorio: bool = False
+    erro_categoria: Optional[str] = None
+    mensagem: str = ""
+    dados: Optional[Any] = None
+    alunos: Optional[List[Dict[str, Any]]] = None
+    endpoint_alvo: str = ""
+    params: dict[str, Any] = field(default_factory=dict)
 
 
 class IScholarClient:
@@ -503,10 +553,15 @@ class IScholarClient:
                 if isinstance(dados, list):
                     items = dados
                 elif isinstance(dados, dict):
-                    for k in ("matriculas", "items", "data"):
+                    # "dados" é o envelope padrão da API iScholar — deve ser
+                    # verificado PRIMEIRO para garantir extração correta.
+                    for k in ("dados", "matriculas", "items", "data"):
                         if isinstance(dados.get(k), list):
                             items = dados[k]
                             break
+                    # Se "dados" contém um dict (envelope com item único), tenta lista de 1
+                    if items is None and isinstance(dados.get("dados"), dict):
+                        items = [dados["dados"]]
 
                 rast: dict[str, Any] = {"endpoint_alvo": endpoint, "params": params, "items_count": (len(items) if isinstance(items, list) else None)}
                 resolved: Optional[int] = None
@@ -611,7 +666,7 @@ class IScholarClient:
     def listar_notas(
         self,
         *,
-        id_matricula: int,
+        id_matricula: Optional[int] = None,
         identificacao: Optional[int] = None,
         tipo: str = "nota",
     ) -> ResultadoListagemNotas:
@@ -623,12 +678,14 @@ class IScholarClient:
         de envio principal.
 
         GET /diario/notas?id_matricula=…&identificacao=…&tipo=…
+
+        Nota: para tokens de integração, a API pode exigir `identificacao`
+        (id_aluno) em vez de ou além de `id_matricula`.
         """
         endpoint = f"{self.base_url}/diario/notas"
-        params: dict[str, Any] = {
-            "id_matricula": self._coerce_int_strict(id_matricula, "id_matricula"),
-            "tipo": str(tipo),
-        }
+        params: dict[str, Any] = {"tipo": str(tipo)}
+        if id_matricula is not None:
+            params["id_matricula"] = self._coerce_int_strict(id_matricula, "id_matricula")
         if identificacao is not None:
             params["identificacao"] = self._coerce_int_strict(
                 identificacao, "identificacao"
@@ -901,6 +958,273 @@ class IScholarClient:
                 headers=headers,
                 payload=payload,
                 rastreabilidade=rast,
+            )
+
+    # -----------------------------------------------------------------------
+    # ENDPOINTS COMPLEMENTARES (novo) — discovery e autopreenchimento de mapas
+    # -----------------------------------------------------------------------
+
+    def listar_disciplinas(self) -> ResultadoListagemDisciplinas:
+        """
+        [FLUXO OFICIAL] GET /disciplinas — lista disciplinas cadastradas na escola.
+
+        Retorna lista de disciplinas com id, nome e abreviação.
+        Útil para autopreenchimento de mapa_disciplinas.json.
+
+        Resposta esperada (envelope iScholar):
+          {"status": "...", "mensagem": "...", "dados": [
+            {"id": "1", "nome": "ARTE", "abreviacao": "ART"},
+            ...
+          ]}
+        """
+        endpoint = f"{self.base_url}/disciplinas"
+
+        try:
+            resp = self.session.get(
+                endpoint,
+                headers=self._get_headers(),
+                timeout=self.timeout,
+            )
+            if resp.status_code in (200, 201):
+                try:
+                    dados = resp.json()
+                except Exception:
+                    dados = resp.text
+
+                # Extrai lista de disciplinas do envelope "dados"
+                disciplinas: Optional[List[Dict[str, Any]]] = None
+                if isinstance(dados, list):
+                    disciplinas = dados
+                elif isinstance(dados, dict):
+                    for k in ("dados", "disciplinas", "items", "data"):
+                        if isinstance(dados.get(k), list):
+                            disciplinas = dados[k]
+                            break
+
+                return ResultadoListagemDisciplinas(
+                    sucesso=True,
+                    status_code=resp.status_code,
+                    dados=dados,
+                    disciplinas=disciplinas,
+                    endpoint_alvo=endpoint,
+                )
+
+            mensagem = f"{resp.status_code}: {resp.text}"
+            erro_cat, trans = self._classificar_erro_http(
+                status_code=resp.status_code, mensagem=mensagem
+            )
+            return ResultadoListagemDisciplinas(
+                sucesso=False,
+                status_code=resp.status_code,
+                transitorio=trans,
+                erro_categoria=erro_cat,
+                mensagem=mensagem,
+                dados=None,
+                disciplinas=None,
+                endpoint_alvo=endpoint,
+            )
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            return ResultadoListagemDisciplinas(
+                sucesso=False,
+                status_code=None,
+                transitorio=True,
+                erro_categoria="rede",
+                mensagem=f"Falha de rede ao listar disciplinas: {exc!s}",
+                dados=None,
+                disciplinas=None,
+                endpoint_alvo=endpoint,
+            )
+        except Exception as exc:
+            return ResultadoListagemDisciplinas(
+                sucesso=False,
+                status_code=None,
+                transitorio=False,
+                erro_categoria="http",
+                mensagem=f"Erro inesperado ao listar disciplinas: {exc!s}",
+                dados=None,
+                disciplinas=None,
+                endpoint_alvo=endpoint,
+            )
+
+    def listar_professores(self) -> ResultadoListagemProfessores:
+        """
+        [FLUXO OFICIAL] GET /funcionarios/professores — lista professores cadastrados.
+
+        Retorna lista de professores com id_professor e nome_professor.
+        Útil para autopreenchimento de mapa_professores.json.
+
+        Resposta esperada (envelope iScholar):
+          {"status": "...", "mensagem": "...", "dados": [
+            {"id_professor": "2", "nome_professor": "ARNOLD"},
+            ...
+          ]}
+        """
+        endpoint = f"{self.base_url}/funcionarios/professores"
+
+        try:
+            resp = self.session.get(
+                endpoint,
+                headers=self._get_headers(),
+                timeout=self.timeout,
+            )
+            if resp.status_code in (200, 201):
+                try:
+                    dados = resp.json()
+                except Exception:
+                    dados = resp.text
+
+                # Extrai lista de professores do envelope "dados"
+                professores: Optional[List[Dict[str, Any]]] = None
+                if isinstance(dados, list):
+                    professores = dados
+                elif isinstance(dados, dict):
+                    for k in ("dados", "professores", "items", "data"):
+                        if isinstance(dados.get(k), list):
+                            professores = dados[k]
+                            break
+
+                return ResultadoListagemProfessores(
+                    sucesso=True,
+                    status_code=resp.status_code,
+                    dados=dados,
+                    professores=professores,
+                    endpoint_alvo=endpoint,
+                )
+
+            mensagem = f"{resp.status_code}: {resp.text}"
+            erro_cat, trans = self._classificar_erro_http(
+                status_code=resp.status_code, mensagem=mensagem
+            )
+            return ResultadoListagemProfessores(
+                sucesso=False,
+                status_code=resp.status_code,
+                transitorio=trans,
+                erro_categoria=erro_cat,
+                mensagem=mensagem,
+                dados=None,
+                professores=None,
+                endpoint_alvo=endpoint,
+            )
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            return ResultadoListagemProfessores(
+                sucesso=False,
+                status_code=None,
+                transitorio=True,
+                erro_categoria="rede",
+                mensagem=f"Falha de rede ao listar professores: {exc!s}",
+                dados=None,
+                professores=None,
+                endpoint_alvo=endpoint,
+            )
+        except Exception as exc:
+            return ResultadoListagemProfessores(
+                sucesso=False,
+                status_code=None,
+                transitorio=False,
+                erro_categoria="http",
+                mensagem=f"Erro inesperado ao listar professores: {exc!s}",
+                dados=None,
+                professores=None,
+                endpoint_alvo=endpoint,
+            )
+
+    def pega_alunos(
+        self,
+        *,
+        id_turma: int,
+        pagina: int = 1,
+    ) -> ResultadoPegaAlunos:
+        """
+        [FLUXO OFICIAL] GET /matricula/pega_alunos — busca alunos de uma turma.
+
+        Endpoint alternativo que retorna id_aluno, id_matricula e numero_re
+        juntos. Pode ser usado como fallback quando buscar_aluno não retorna
+        id_aluno, ou para resolver id_matricula em uma única chamada.
+
+        GET /matricula/pega_alunos?id_turma=…&pagina=…
+
+        Resposta esperada (envelope iScholar):
+          {"status": "...", "mensagem": "...", "dados": [
+            {"id_aluno": "42", "id_matricula": "97", "numero_re": "12345", ...},
+            ...
+          ]}
+        """
+        endpoint = f"{self.base_url}/matricula/pega_alunos"
+        params: dict[str, Any] = {
+            "id_turma": self._coerce_int_strict(id_turma, "id_turma"),
+            "pagina": int(pagina),
+        }
+
+        try:
+            resp = self.session.get(
+                endpoint,
+                params=params,
+                headers=self._get_headers(),
+                timeout=self.timeout,
+            )
+            if resp.status_code in (200, 201):
+                try:
+                    dados = resp.json()
+                except Exception:
+                    dados = resp.text
+
+                # Extrai lista de alunos do envelope "dados"
+                alunos: Optional[List[Dict[str, Any]]] = None
+                if isinstance(dados, list):
+                    alunos = dados
+                elif isinstance(dados, dict):
+                    for k in ("dados", "alunos", "items", "data"):
+                        if isinstance(dados.get(k), list):
+                            alunos = dados[k]
+                            break
+
+                return ResultadoPegaAlunos(
+                    sucesso=True,
+                    status_code=resp.status_code,
+                    dados=dados,
+                    alunos=alunos,
+                    endpoint_alvo=endpoint,
+                    params=params,
+                )
+
+            mensagem = f"{resp.status_code}: {resp.text}"
+            erro_cat, trans = self._classificar_erro_http(
+                status_code=resp.status_code, mensagem=mensagem
+            )
+            return ResultadoPegaAlunos(
+                sucesso=False,
+                status_code=resp.status_code,
+                transitorio=trans,
+                erro_categoria=erro_cat,
+                mensagem=mensagem,
+                dados=None,
+                alunos=None,
+                endpoint_alvo=endpoint,
+                params=params,
+            )
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            return ResultadoPegaAlunos(
+                sucesso=False,
+                status_code=None,
+                transitorio=True,
+                erro_categoria="rede",
+                mensagem=f"Falha de rede ao buscar alunos: {exc!s}",
+                dados=None,
+                alunos=None,
+                endpoint_alvo=endpoint,
+                params=params,
+            )
+        except Exception as exc:
+            return ResultadoPegaAlunos(
+                sucesso=False,
+                status_code=None,
+                transitorio=False,
+                erro_categoria="http",
+                mensagem=f"Erro inesperado ao buscar alunos: {exc!s}",
+                dados=None,
+                alunos=None,
+                endpoint_alvo=endpoint,
+                params=params,
             )
 
     # -----------------------------------------------------------------------
