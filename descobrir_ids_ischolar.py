@@ -47,7 +47,7 @@ from ischolar_client import IScholarClient
 # Helpers de exibicao
 # ---------------------------------------------------------------------------
 
-def _sep(char: str = "─", n: int = 60) -> None:
+def _sep(char: str = "-", n: int = 60) -> None:
     print(char * n)
 
 
@@ -198,12 +198,77 @@ def etapa_3_listar_matriculas(
     """Chama /matricula/listar e mostra shape da resposta."""
     _titulo(f"ETAPA 3 — Listar matriculas (id_aluno={id_aluno})")
 
+    # Tentativa 1: sem filtro
     resultado = cliente.listar_matriculas(id_aluno=id_aluno, resolver_id_matricula=True)
+
+    # Se falhou por ambiguidade, tentar filtrar por situacao="cursando"
+    ids_encontrados = resultado.rastreabilidade.get("id_matriculas_extraiados", []) if resultado.rastreabilidade else []
+    if not resultado.sucesso and len(ids_encontrados) > 1:
+        _info("Multiplas matriculas encontradas. Tentando filtrar por situacao='cursando'...")
+        if resultado.rastreabilidade:
+            ids_ambiguos = resultado.rastreabilidade.get("id_matriculas_extraiados", [])
+            _info(f"IDs encontrados (todos): {ids_ambiguos}")
+
+        # Mostrar dados brutos para diagnostico
+        if verbose and resultado.dados is not None:
+            print()
+            _info("Resposta bruta (todas as matriculas):")
+            print(_json_pretty(resultado.dados))
+
+        # Tentativa 2: filtrar por situacao
+        for sit in ("cursando", "Cursando", "CURSANDO", "ativo", "Ativo"):
+            resultado2 = cliente.listar_matriculas(
+                id_aluno=id_aluno, resolver_id_matricula=True, situacao=sit
+            )
+            if resultado2.sucesso and resultado2.id_matricula_resolvido is not None:
+                _ok(f"Filtro situacao='{sit}' resolveu a ambiguidade!")
+                resultado = resultado2
+                break
+
+        # Tentativa 3: preferir matricula com status "MATRICULADO" nos dados brutos
+        if not resultado.sucesso and resultado.dados is not None:
+            itens = resultado.dados
+            if isinstance(itens, dict):
+                for k in ("dados", "matriculas", "items", "data"):
+                    if isinstance(itens.get(k), list):
+                        itens = itens[k]
+                        break
+            if isinstance(itens, list):
+                # Preferir MATRICULADO, depois qualquer outro com id_matricula
+                matriculado_id = None
+                primeiro_id = None
+                for item in itens:
+                    if not isinstance(item, dict):
+                        continue
+                    id_mat = item.get("id_matricula")
+                    if id_mat is None:
+                        continue
+                    try:
+                        id_int = int(id_mat)
+                    except (ValueError, TypeError):
+                        continue
+                    if primeiro_id is None:
+                        primeiro_id = id_int
+                    status = str(item.get("status_matricula_diario", "")).upper()
+                    if status == "MATRICULADO":
+                        matriculado_id = id_int
+                        break
+                escolhido = matriculado_id if matriculado_id is not None else primeiro_id
+                if escolhido is not None:
+                    motivo = "status=MATRICULADO" if matriculado_id else "primeiro da lista"
+                    _info(f"Heuristica por {motivo}: id_matricula = {escolhido}")
+                    _ok(f"Heuristica: id_matricula = {escolhido}")
+                    return escolhido, resultado.dados
 
     if not resultado.sucesso:
         _erro(f"listar_matriculas falhou: {resultado.mensagem}")
         orientacao = _classificar_erro_http(resultado.status_code, resultado.mensagem)
         _info(orientacao)
+        # Mesmo falhando, mostrar dados brutos para diagnostico
+        if verbose and resultado.dados is not None:
+            print()
+            _info("Resposta bruta:")
+            print(_json_pretty(resultado.dados))
         return None, None
 
     _ok(f"listar_matriculas retornou sucesso (HTTP {resultado.status_code})")
@@ -228,20 +293,48 @@ def etapa_3_listar_matriculas(
     return resultado.id_matricula_resolvido, resultado.dados
 
 
+def _notas_ok(resultado: Any) -> bool:
+    """Verifica se a resposta de /diario/notas contém dados validos."""
+    if not resultado.sucesso:
+        return False
+    dados = resultado.dados
+    if isinstance(dados, dict) and dados.get("status") in ("error", "erro"):
+        return False
+    return True
+
+
 def etapa_4_listar_notas(
     cliente: IScholarClient,
     id_matricula: int,
     verbose: bool = False,
+    id_aluno: Optional[int] = None,
 ) -> Any:
     """Chama /diario/notas para descobrir IDs de disciplina/avaliacao/professor."""
     _titulo(f"ETAPA 4 — Listar notas (id_matricula={id_matricula})")
 
-    resultado = cliente.listar_notas(id_matricula=id_matricula)
+    # Tenta 3 combinacoes de parametros — a API pode variar por tipo de token
+    tentativas = [
+        ("identificacao=id_aluno", dict(identificacao=id_aluno)),
+        ("id_matricula+identificacao", dict(id_matricula=id_matricula, identificacao=id_aluno)),
+        ("somente id_matricula", dict(id_matricula=id_matricula)),
+    ]
 
-    if not resultado.sucesso:
-        _erro(f"listar_notas falhou: {resultado.mensagem}")
-        orientacao = _classificar_erro_http(resultado.status_code, resultado.mensagem)
-        _info(orientacao)
+    resultado = None
+    for descricao, kwargs in tentativas:
+        if any(v is None for v in kwargs.values()):
+            continue  # pula se algum parametro necessario e None
+        _info(f"Tentando: {descricao}...")
+        r = cliente.listar_notas(**kwargs)
+        if _notas_ok(r):
+            _ok(f"Combinacao funcionou: {descricao}")
+            resultado = r
+            break
+        motivo = r.dados.get("message") or r.dados.get("msg") or r.mensagem if isinstance(r.dados, dict) else r.mensagem
+        _info(f"Falhou ({descricao}): {motivo}")
+
+    if resultado is None:
+        _erro("Todas as combinacoes de parametros falharam para /diario/notas.")
+        _info("Isso pode indicar que o token de integracao nao tem permissao para este endpoint.")
         return None
 
     _ok(f"listar_notas retornou sucesso (HTTP {resultado.status_code})")
@@ -555,7 +648,7 @@ def main() -> None:
             sys.exit(1)
 
     # Etapa 4: Listar notas
-    dados_notas = etapa_4_listar_notas(cliente, id_matricula, verbose=args.verbose)
+    dados_notas = etapa_4_listar_notas(cliente, id_matricula, verbose=args.verbose, id_aluno=id_aluno)
     resultados["Etapa 4 - Listar notas"] = dados_notas is not None
 
     # Etapa 5: Gerar esqueletos (opcional)

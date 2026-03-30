@@ -16,22 +16,23 @@ Ele serve tanto como **checklist de smoke test local** quanto como **guia de go/
 
 ### 1.1 Instalação e configuração
 
-- [ ] Projeto instalado e dependências Python satisfeitas
-- [ ] Arquivo `.env` criado a partir de `.env.example` **🔴 BLOQUEANTE**
-- [ ] `ISCHOLAR_API_TOKEN` preenchido no `.env` (gerar em https://madan_homolog.ischolar.com.br/) **🔴 BLOQUEANTE**
-- [ ] `ISCHOLAR_CODIGO_ESCOLA` preenchido no `.env` — homologação: `madan_homolog` **🔴 BLOQUEANTE**
-- [ ] `ISCHOLAR_BASE_URL` confirmada: `https://api.ischolar.app` (mesma para homologação e produção)
-- [ ] `mapa_disciplinas.json` presente e preenchido com IDs reais **🔴 BLOQUEANTE**
-- [ ] `mapa_avaliacoes.json` presente e preenchido com IDs reais **🔴 BLOQUEANTE**
-- [ ] `mapa_professores.json` presente se a escola exigir professor no lançamento **🔴 BLOQUEANTE (condicional)**
-- [ ] Ambiente configurado corretamente: homologação **ou** produção — nunca ambos ao mesmo tempo
+- [x] Projeto instalado e dependências Python satisfeitas
+- [x] Arquivo `.env` criado a partir de `.env.example` **🔴 BLOQUEANTE**
+- [x] `ISCHOLAR_API_TOKEN` preenchido no `.env` (token de integração gerado) **🔴 BLOQUEANTE**
+- [x] `ISCHOLAR_CODIGO_ESCOLA` preenchido no `.env` — valor: `madan` (extraído do JWT) **🔴 BLOQUEANTE**
+- [x] `ISCHOLAR_BASE_URL` confirmada: `https://api.ischolar.app` (mesma para homologação e produção)
+- [x] `mapa_disciplinas.json` presente e preenchido com 16 IDs reais **🔴 BLOQUEANTE**
+- [x] `mapa_avaliacoes.json` presente e preenchido com 19 IDs reais (92–110) **🔴 BLOQUEANTE**
+- [x] `mapa_professores.json` presente com 25 IDs reais (10 aliases em 0 — professores fora de 1ª/2ª série) **🔴 BLOQUEANTE (condicional)**
+- [x] Ambiente configurado corretamente
 
-> **Informações confirmadas pelo TI do iScholar (março/2026):**
-> - URL da API: mesma para homologação e produção
-> - `X-Codigo-Escola` homologação: `madan_homolog`
-> - Interface web de homologação: https://madan_homolog.ischolar.com.br/
-> - Sem diferenças relevantes entre ambientes além do código da escola
-> - Token: gerar seguindo https://ajuda.ischolar.com.br/pt-BR/articles/5680701-acessando-a-api-do-ischolar
+> **Informações confirmadas (2026-03-28):**
+> - URL da API: `https://api.ischolar.app` (mesma para todos os ambientes)
+> - `X-Codigo-Escola`: `madan` (extraído do campo `escola` no payload JWT do token)
+> - Interface web: `https://madan.ischolar.com.br/`
+> - Token de integração ativo (tipo `integracao`, sem expiração)
+> - `/diario/notas` bloqueado para tokens de integração (não afeta envio de notas)
+> - IDs de avaliação coletados manualmente da interface web (sistema avaliativo ID=9)
 
 ### 1.2 Template da planilha
 
@@ -73,12 +74,12 @@ python descobrir_ids_ischolar.py --ra <RA_TESTE> --gerar-mapas
 
 ### 1.5.3 Checklist do discovery
 
-- [ ] `descobrir_ids_ischolar.py` etapa 1 (conectividade) passa sem erro **🔴 BLOQUEANTE**
-- [ ] `descobrir_ids_ischolar.py` etapa 2 (buscar aluno) retorna id_aluno **🔴 BLOQUEANTE**
-- [ ] `descobrir_ids_ischolar.py` etapa 3 (listar matrículas) retorna id_matricula **🔴 BLOQUEANTE**
-- [ ] `descobrir_ids_ischolar.py` etapa 4 (listar notas) retorna IDs de disciplina/avaliação **🟡 ATENÇÃO**
-- [ ] Shape de `/aluno/busca` compatível com `_extrair_id_aluno_da_resposta()` **🔴 BLOQUEANTE**
-- [ ] Shape de `/matricula/listar` compatível com a extração de `id_matricula` **🔴 BLOQUEANTE**
+- [x] `descobrir_ids_ischolar.py` etapa 1 (conectividade) passa sem erro **🔴 BLOQUEANTE**
+- [x] `descobrir_ids_ischolar.py` etapa 2 (buscar aluno) retorna id_aluno (confirmado: RA 1222 → id_aluno 1222) **🔴 BLOQUEANTE**
+- [x] `descobrir_ids_ischolar.py` etapa 3 (listar matrículas) retorna id_matricula (confirmado: id_matricula 1184 via heurística MATRICULADO) **🔴 BLOQUEANTE**
+- [x] `descobrir_ids_ischolar.py` etapa 4 (listar notas) — **bloqueado** para tokens de integração (não afeta envio) **🟡 ATENÇÃO**
+- [x] Shape de `/aluno/busca` compatível com `_extrair_id_aluno_da_resposta()` (campo em `dados.informacoes_basicas.id_aluno`) **🔴 BLOQUEANTE**
+- [x] Shape de `/matricula/listar` compatível com a extração de `id_matricula` **🔴 BLOQUEANTE**
 
 ### 1.5.4 Preencher os mapas
 
@@ -108,14 +109,14 @@ python cli_envio.py \
 
 ### 2.2 Sinais esperados no terminal (dry-run bem-sucedido)
 
-- [ ] `ETAPA 1 — Carregando planilha` → linha com `✅ Planilha carregada`
-- [ ] `ETAPA 2 — Validando template` → `✅ Template válido`
-- [ ] `ETAPA 3/4 — Gerando lançamentos e validando` — sem mensagem de erro
-- [ ] `RESUMO DO LOTE` — total de linhas, alunos e sendáveis coerentes com a planilha
-- [ ] `ETAPA 6 — Preflight Técnico` → `✅ Resolvedor pronto` com contagem de disciplinas e avaliações **🔴 BLOQUEANTE**
-- [ ] `ETAPA 7 — Aprovação` → aprovação automática registrada
-- [ ] `ETAPA 8 — DRY RUN` → processados sem erro de resolução
-- [ ] `RESULTADO DO ENVIO` → modo `DRY RUN`, total sendáveis > 0, erros de resolução = 0
+- [x] `ETAPA 1 — Carregando planilha` → `✅ Planilha carregada` (10 linhas)
+- [x] `ETAPA 2 — Validando template` → `✅ Template válido`
+- [x] `ETAPA 3/4 — Gerando lançamentos e validando` — 30 itens sendáveis, 0 erros
+- [x] `RESUMO DO LOTE` — totais coerentes com a planilha
+- [x] `ETAPA 6 — Preflight Técnico` → `✅ Resolvedor pronto` (89 professores, 35 disciplinas, 19 avaliações) **🔴 BLOQUEANTE**
+- [x] `ETAPA 7 — Aprovação` → aprovação automática registrada (aprovador: Pedro)
+- [x] `ETAPA 8 — DRY RUN` → processados sem erro de resolução
+- [x] `RESULTADO DO ENVIO` → modo `DRY RUN`, 30 sendáveis, 0 erros de resolução
 
 ### 2.3 Sinais de erro que exigem parada imediata 🔴
 
@@ -131,11 +132,11 @@ python cli_envio.py \
 
 ### 2.4 Checklist de resultado do smoke test local
 
-- [ ] Exit code `0` no dry-run **🔴 BLOQUEANTE**
-- [ ] Nenhum erro de resolução de IDs no dry-run **🔴 BLOQUEANTE**
-- [ ] Nenhuma linha bloqueada por erro de validação (total_erros = 0) **🔴 BLOQUEANTE**
-- [ ] Total sendáveis > 0 (o lote tem itens para enviar) **🔴 BLOQUEANTE**
-- [ ] Resumo do lote condiz com o conteúdo da planilha **🟡 ATENÇÃO**
+- [x] Exit code `0` no dry-run **🔴 BLOQUEANTE**
+- [x] Nenhum erro de resolução de IDs no dry-run **🔴 BLOQUEANTE**
+- [x] Nenhuma linha bloqueada por erro de validação (total_erros = 0) **🔴 BLOQUEANTE**
+- [x] Total sendáveis > 0 (30 itens sendáveis) **🔴 BLOQUEANTE**
+- [x] Resumo do lote condiz com o conteúdo da planilha **🟡 ATENÇÃO**
 
 ---
 
@@ -143,12 +144,12 @@ python cli_envio.py \
 
 ### 3.1 Pré-requisitos do ambiente de homologação
 
-- [x] URL da API confirmada: `https://api.ischolar.app` (mesma para homologação e produção)
-- [x] Código da escola de homologação: `madan_homolog`
-- [x] Interface web de homologação disponível: `https://madan_homolog.ischolar.com.br/`
-- [ ] Token (`X-Autorizacao`) gerado e configurado no `.env` **🔴 BLOQUEANTE**
-- [ ] Ao menos um aluno real (ou de teste) com RA conhecido disponível no ambiente
-- [ ] IDs de disciplina e avaliação descobertos via `descobrir_ids_ischolar.py` e preenchidos nos mapas
+- [x] URL da API confirmada: `https://api.ischolar.app`
+- [x] Código da escola: `madan` (extraído do JWT)
+- [x] Interface web disponível: `https://madan.ischolar.com.br/`
+- [x] Token (`X-Autorizacao`) gerado e configurado no `.env` **🔴 BLOQUEANTE**
+- [x] Alunos reais com RA conhecido (ALICE BARCELOS LINS RA 1222, ALICE DE MEDEIROS RA 1239, ALICE DE SÁ RA 1437)
+- [x] IDs de disciplina e avaliação coletados da interface web e preenchidos nos mapas
 
 ### 3.2 Validação de conectividade
 
@@ -158,16 +159,16 @@ python cli_envio.py \
 
 ### 3.3 Validação do shape real da API
 
-- [ ] `/aluno/busca` retorna resposta com estrutura compatível com o resolvedor
-- [ ] `id_aluno` presente e único na resposta
-- [ ] `/matricula/listar` retorna lista de matrículas sem ambiguidade para os alunos do piloto
+- [x] `/aluno/busca` retorna resposta com estrutura compatível com o resolvedor (campo em `dados.informacoes_basicas.id_aluno`)
+- [x] `id_aluno` presente e único na resposta
+- [x] `/matricula/listar` retorna lista de matrículas (resolvido via heurística `status_matricula_diario == "MATRICULADO"`)
 - [ ] Confirmado com o TI se `id_professor` é obrigatório para a escola Madan **🟡 ATENÇÃO**
 
 ### 3.4 Validação dos mapas com IDs reais
 
-- [ ] `mapa_disciplinas.json` preenchido com IDs reais do ambiente de homologação
-- [ ] `mapa_avaliacoes.json` preenchido com IDs reais do ambiente de homologação
-- [ ] Dry-run no ambiente de homologação: zero erros de resolução
+- [x] `mapa_disciplinas.json` preenchido com 16 IDs reais
+- [x] `mapa_avaliacoes.json` preenchido com 19 IDs reais (sistema avaliativo ID=9)
+- [x] Dry-run: zero erros de resolução (30 itens sendáveis)
 
 ### 3.5 Validação do POST real em homologação (piloto controlado)
 
@@ -222,16 +223,19 @@ Qualquer um dos itens abaixo estiver presente:
 
 | Item | Quem resolve | Status |
 |------|-------------|--------|
-| Acesso ao ambiente de homologação | TI do iScholar | **Resolvido** — `madan_homolog` |
-| Credenciais e código da escola de teste | TI do iScholar | **Parcialmente resolvido** — código = `madan_homolog`, token a gerar pelo operador |
-| Shape real de `/aluno/busca` | Desenvolvedor | **Pendente** — usar `descobrir_ids_ischolar.py` |
-| Shape real de `/matricula/listar` | Desenvolvedor | **Pendente** — usar `descobrir_ids_ischolar.py` |
-| Confirmação se `id_professor` é obrigatório para o Madan | TI do iScholar | Pendente |
-| IDs reais de disciplina para homologação | Desenvolvedor | **Pendente** — usar `descobrir_ids_ischolar.py --gerar-mapas` |
-| IDs reais de avaliação para homologação | Desenvolvedor | **Pendente** — usar `descobrir_ids_ischolar.py --gerar-mapas` |
+| Acesso ao ambiente | TI do iScholar | **Resolvido** — código escola `madan` |
+| Credenciais | TI do iScholar | **Resolvido** — token de integração ativo |
+| Shape real de `/aluno/busca` | Desenvolvedor | **Resolvido** — campo em `dados.informacoes_basicas.id_aluno` |
+| Shape real de `/matricula/listar` | Desenvolvedor | **Resolvido** — heurística MATRICULADO |
+| `/diario/notas` para tokens de integração | TI do iScholar | **Bloqueado** — não afeta envio |
+| Confirmação se `id_professor` é obrigatório para o Madan | TI do iScholar | **Pendente** |
+| IDs reais de disciplina | Desenvolvedor | **Resolvido** — 16 IDs coletados da interface web |
+| IDs reais de avaliação | Desenvolvedor | **Resolvido** — 19 IDs do sistema avaliativo ID=9 |
+| IDs reais de professor | Desenvolvedor | **Resolvido** — 25 IDs coletados da interface web |
+| POST real em homologação | Operador | **Pendente** — próximo passo |
+| Teste de idempotência | Operador | **Pendente** |
 | Adoção formal do template fixo pelo Madan | Madan | Pendente |
 | Garantia de preenchimento do RA pelo Madan | Madan | Pendente |
-| Fechamento das regras pedagógicas provisórias | Madan | Pendente |
 
 ---
 
@@ -248,3 +252,15 @@ Preencher a cada execução:
 | Resultado | sucesso / falha parcial / falha total |
 | Exit code | |
 | Observações | |
+
+### Execução 1 — Dry-run (2026-03-28)
+
+| Campo | Valor |
+|-------|-------|
+| Data | 2026-03-28 |
+| Ambiente | produção (código escola: `madan`) |
+| Lote ID | smoke-test-001 |
+| Operador | Pedro |
+| Resultado | **Sucesso** (dry-run) |
+| Exit code | 0 |
+| Observações | 10 linhas processadas, 30 itens sendáveis, 0 erros. Planilha com 3 alunos (RA 1222, 1239, 1437) × 7 disciplinas. Avisos PROFESSOR_NAO_ENCONTRADO_REGISTRO não bloqueantes (frentes tipo "Matematica A" vs registro hardcoded). Auto-detecção de header funcionou (planilha com célula mesclada na linha 1). |

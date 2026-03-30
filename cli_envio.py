@@ -177,7 +177,15 @@ def _carregar_planilha(caminho: str) -> pd.DataFrame:
 
     ext = p.suffix.lower()
     if ext in (".xlsx", ".xls"):
-        df = pd.read_excel(caminho, dtype=str)
+        # Tenta header=0 primeiro; se as colunas obrigatórias não forem
+        # encontradas, tenta header=1 (planilha Madan tem linha de
+        # cabeçalho agrupado antes dos nomes reais das colunas).
+        df = pd.read_excel(caminho, dtype=str, header=0)
+        _colunas_obrig = {"estudante", "ra", "turma", "trimestre", "disciplina"}
+        colunas_norm = {c.strip().lower() for c in df.columns if isinstance(c, str)}
+        if not _colunas_obrig.intersection(colunas_norm):
+            log.info("Header na linha 1 não contém colunas esperadas; tentando header=1")
+            df = pd.read_excel(caminho, dtype=str, header=1)
     elif ext == ".csv":
         # Tenta separador padrão; fallback para ponto-e-vírgula
         df = pd.read_csv(caminho, dtype=str, sep=None, engine="python")

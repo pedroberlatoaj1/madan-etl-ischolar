@@ -666,7 +666,7 @@ class IScholarClient:
     def listar_notas(
         self,
         *,
-        id_matricula: int,
+        id_matricula: Optional[int] = None,
         identificacao: Optional[int] = None,
         tipo: str = "nota",
     ) -> ResultadoListagemNotas:
@@ -678,12 +678,14 @@ class IScholarClient:
         de envio principal.
 
         GET /diario/notas?id_matricula=…&identificacao=…&tipo=…
+
+        Nota: para tokens de integração, a API pode exigir `identificacao`
+        (id_aluno) em vez de ou além de `id_matricula`.
         """
         endpoint = f"{self.base_url}/diario/notas"
-        params: dict[str, Any] = {
-            "id_matricula": self._coerce_int_strict(id_matricula, "id_matricula"),
-            "tipo": str(tipo),
-        }
+        params: dict[str, Any] = {"tipo": str(tipo)}
+        if id_matricula is not None:
+            params["id_matricula"] = self._coerce_int_strict(id_matricula, "id_matricula")
         if identificacao is not None:
             params["identificacao"] = self._coerce_int_strict(
                 identificacao, "identificacao"
