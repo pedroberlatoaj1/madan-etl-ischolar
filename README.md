@@ -1,16 +1,20 @@
 # Pipeline Madan → iScholar
 
-Integração operacional para receber uma planilha fixa de notas do Madan, aplicar regras pedagógicas explícitas, transformar cada linha em lançamentos canônicos auditáveis, validar o lote, executar um preflight técnico, exigir aprovação humana, resolver os IDs necessários no iScholar e enviar apenas o que foi aprovado, com auditoria por item.
+Integração operacional para receber uma planilha de notas do Madan, aplicar regras pedagógicas explícitas, transformar cada linha em lançamentos canônicos auditáveis, validar o lote, executar preflight técnico, exigir aprovação humana, resolver os IDs necessários no iScholar e enviar apenas o que foi aprovado — com auditoria por item.
 
-**Fluxo oficial novo:**
+**Fluxo resumido:**
 
-**planilha fixa → transformação canônica → validação → preflight técnico → lote → aprovação → resolução de IDs → envio → auditoria**
+```
+template wide por turma → professor preenche → auto-detecção de formato
+→ adaptador unpivot → transformação canônica → validação → preflight
+→ aprovação → resolução de IDs → envio → auditoria
+```
 
 > **Fonte de verdade deste README**
 >
-> Este documento descreve o **fluxo oficial novo** do projeto.
->
-> Componentes antigos de monitoramento, webhook e worker podem continuar no repositório por compatibilidade, ingestão auxiliar ou transição, mas **não devem ser tratados como a rota oficial principal**.
+> Este documento descreve o **fluxo oficial** do projeto.
+> Componentes de monitoramento, webhook e worker legados podem continuar no
+> repositório por compatibilidade ou transição, mas **não são a rota oficial principal**.
 >
 > O README não substitui:
 > - o contrato efetivo do código;
@@ -25,333 +29,480 @@ O objetivo do projeto **não** é apenas "chamar a API do iScholar".
 
 O objetivo é construir um fluxo operacional completo, confiável e auditável que:
 
-1. recebe uma planilha oficial de notas;
-2. interpreta essa planilha segundo regras pedagógicas explícitas;
-3. transforma cada linha em lançamentos canônicos auditáveis;
-4. valida os lançamentos antes do envio;
-5. executa um preflight técnico antes da aprovação humana;
-6. exige aprovação manual do lote;
-7. resolve os IDs necessários no iScholar;
-8. envia apenas os itens aprovados;
-9. registra auditoria por item.
+1. gera um template por turma com todas as disciplinas e frentes já estruturadas;
+2. recebe o template preenchido pelos professores;
+3. interpreta a planilha segundo regras pedagógicas explícitas;
+4. transforma cada entrada em lançamentos canônicos auditáveis;
+5. valida os lançamentos antes do envio;
+6. executa preflight técnico antes da aprovação humana;
+7. exige aprovação manual do lote;
+8. resolve os IDs necessários no iScholar;
+9. envia apenas os itens aprovados;
+10. registra auditoria por item.
 
 Em outras palavras: este projeto é um **pipeline operacional**, não um script isolado.
 
 ---
 
-## 2. Arquitetura oficial
+## 2. Fluxo Operacional
 
-```text
-┌──────────────────────────────────────────────────────────────────────┐
-│  ENTRADA OFICIAL                                                    │
-│  planilha Excel/CSV fixa do Madan                                   │
-│  template oficial com colunas obrigatórias, notas e conferência     │
-└──────────────────────────────┬───────────────────────────────────────┘
-                               │
-┌──────────────────────────────▼───────────────────────────────────────┐
-│  TRANSFORMAÇÃO CANÔNICA                                              │
-│  madan_planilha_mapper.py                                            │
-│  avaliacao_rules.py                                                  │
-│  transformador.py                                                    │
-│  validacao_pre_envio.py                                              │
-│                                                                      │
-│  Resultado: lançamentos canônicos auditáveis                         │
-│  com RA, disciplina, avaliação, professor (quando aplicável),        │
-│  nota bruta de envio e artefatos internos de auditoria               │
-└──────────────────────────────┬───────────────────────────────────────┘
-                               │
-┌──────────────────────────────▼───────────────────────────────────────┐
-│  PREFLIGHT TÉCNICO                                                   │
-│  cli_envio.py                                                        │
-│  resolvedor_ids_ischolar.py                                          │
-│  ischolar_client.py                                                  │
-│                                                                      │
-│  valida credenciais, mapas e capacidade de resolver IDs              │
-│  antes da persistência inicial do lote e da aprovação humana         │
-└──────────────────────────────┬───────────────────────────────────────┘
-                               │
-┌──────────────────────────────▼───────────────────────────────────────┐
-│  CONTROLE OPERACIONAL                                                │
-│  aprovacao_lote.py                                                   │
-│  aprovacao_lote_store.py                                             │
-│  lote_itens_store.py                                                 │
-│                                                                      │
-│  resumo do lote → elegibilidade → aprovação explícita                │
-└──────────────────────────────┬───────────────────────────────────────┘
-                               │
-┌──────────────────────────────▼───────────────────────────────────────┐
-│  RESOLUÇÃO + ENVIO                                                   │
-│  resolvedor_ids_ischolar.py                                          │
-│  ischolar_client.py                                                  │
-│  envio_lote.py                                                       │
-│                                                                      │
-│  resolve IDs exigidos → monta payload oficial → envia por item       │
-└──────────────────────────────┬───────────────────────────────────────┘
-                               │
-┌──────────────────────────────▼───────────────────────────────────────┐
-│  SAÍDA, AUDITORIA E SUPORTE OPERACIONAL                              │
-│  envio_lote_audit_store.py                                           │
-│  alertas.py                                                          │
-│                                                                      │
-│  auditoria por item + rastreabilidade + alertas operacionais         │
-└──────────────────────────────────────────────────────────────────────┘
+### 2.1 Papel da Coordenação — geração do template
+
+A coordenação gera um arquivo Excel por turma **antes** do período de preenchimento:
+
+```bash
+python gerador_planilhas.py \
+    --trimestre T1 \
+    --ano 2026 \
+    --alunos roster.csv \
+    --output ./planilhas/
 ```
 
----
+O comando gera um arquivo por turma (ex: `1A_T1_2026.xlsx`) com:
+- **1 aba única** chamada `Notas`
+- **4 colunas fixas** pré-preenchidas: `Estudante`, `RA`, `Turma`, `Trimestre`
+- **1 coluna por (disciplina, frente, tipo de avaliação)** — geradas automaticamente a partir do registro de professores da turma
 
-## 3. Entrypoint oficial
+> O cabeçalho é derivado de `professores_madan.py`, garantindo que apenas as combinações disciplina-frente válidas para aquela turma apareçam como colunas.
 
-O entrypoint oficial de operação do fluxo novo é:
+### 2.2 Papel do Professor — preenchimento
 
-- `cli_envio.py`
+O professor recebe a planilha de sua turma e preenche **apenas as colunas das suas disciplinas e frentes**. As demais colunas podem ficar em branco — o sistema ignora células vazias.
 
-É ele que deve orquestrar o fluxo:
+```
+Estudante          | RA   | Turma | Trimestre | Física - Frente A - AV 1 Obj | Física - Frente A - AV 1 Disc | ...
+Alice de Medeiros  | 1239 | 1A    | T1        | 5,5                           | 3,0                           | ...
+Bruno Carvalho     | 1101 | 1A    | T1        | Faltou                        | Faltou                        | ...
+Clara Fontes       | 1058 | 1A    | T1        |                               |                               | ...
+```
 
-- carregar planilha;
-- validar template;
-- transformar e validar linhas;
-- gerar resumo do lote;
-- executar preflight técnico;
-- criar stores e persistir o estado inicial do lote;
-- solicitar aprovação;
-- enviar;
-- exibir resultado final;
-- registrar auditoria.
+**Convenções de preenchimento:**
 
----
+| Situação | Como preencher | Comportamento |
+|---|---|---|
+| Nota normal | `7,5` ou `7.5` | Lançado normalmente |
+| Ausência na prova | `Faltou` | Registrado com flag de ausência |
+| Ainda não aplicado | *(célula vazia)* | Ignorado — não gera lançamento |
+| OBJ + DISC acima de 10 | ex: `7 + 5 = 12` | Erro de validação — bloqueia o envio |
 
-## 4. Template oficial da planilha
+### 2.3 Papel do Pipeline — processamento
 
-A planilha de entrada é ditada pelo sistema, não pelo usuário.
+Ao receber a planilha preenchida, o CLI:
 
-O projeto não tenta se adaptar a planilhas arbitrárias do Madan.
-Em vez disso, usa um modelo oficial fixo.
-
-### 4.1 Colunas obrigatórias
-
-- Estudante
-- RA
-- Turma
-- Trimestre
-- Disciplina
-- Frente - Professor
-
-### 4.2 Colunas de nota
-
-- AV 1 (OBJ)
-- AV 1 (DISC)
-- AV 2 (OBJ)
-- AV 2 (DISC)
-- AV 3 (listas)
-- AV 3 (avaliação)
-- Simulado
-- Ponto extra
-- Recuperação
-
-### 4.3 Colunas opcionais de conferência
-
-- Nota sem a AV 3
-- Nota com a AV 3
-- Nota Final
-
-### 4.4 Regras do template
-
-- notas entre 0 e 10;
-- célula vazia significa não se aplica, nunca zero;
-- decimais com vírgula ou ponto são aceitos;
-- uma linha por aluno por disciplina;
-- RA é obrigatório;
-- RA faz parte do schema canônico e é usado para localizar o aluno e sua matrícula no iScholar;
-- Frente - Professor faz parte do template oficial, mesmo que `id_professor` possa ou não ser obrigatório no envio dependendo da escola.
-
-As colunas de conferência são auxiliares.
-Elas não comandam o payload oficial de envio.
+1. **Auto-detecta o formato** — wide novo ou semi-wide antigo;
+2. Se wide novo: **valida e despivota** (1 linha por aluno → N linhas por aluno × disciplina × frente);
+3. Processa via pipeline canônico existente sem alteração alguma nas regras pedagógicas.
 
 ---
 
-## 5. Semântica oficial do domínio
+## 3. Arquitetura Técnica
 
-As decisões centrais do fluxo novo são:
+```text
+┌─────────────────────────────────────────────────────────────────────┐
+│  GERAÇÃO DO TEMPLATE (gerador_planilhas.py)                         │
+│  1 arquivo .xlsx por turma · 1 aba "Notas" · formato wide           │
+│  cabeçalho derivado de professores_madan.py                         │
+└────────────────────────────────┬────────────────────────────────────┘
+                                 │  professor preenche
+┌────────────────────────────────▼────────────────────────────────────┐
+│  ENTRADA                                                            │
+│  planilha wide (novo) OU planilha semi-wide (legado)                │
+│  auto-detecção transparente via detectar_formato()                  │
+└────────────────────────────────┬────────────────────────────────────┘
+                                 │
+             ┌───────────────────▼──────────────────────┐
+             │  ADAPTER PATTERN (wide_format_adapter.py) │
+             │  Unpivot: 1 linha → N linhas virtuais     │
+             │  Regex extrai disciplina, frente, tipo    │
+             │  Isola regras de negócio do transformador │
+             └───────────────────┬──────────────────────┘
+                                 │  formato canônico (semi-wide)
+┌────────────────────────────────▼────────────────────────────────────┐
+│  TRANSFORMAÇÃO CANÔNICA                                             │
+│  madan_planilha_mapper.py · avaliacao_rules.py · transformador.py  │
+│  validacao_pre_envio.py                                             │
+│  → lançamentos canônicos auditáveis                                 │
+└────────────────────────────────┬────────────────────────────────────┘
+                                 │
+┌────────────────────────────────▼────────────────────────────────────┐
+│  PREFLIGHT TÉCNICO                                                  │
+│  cli_envio.py · resolvedor_ids_ischolar.py · ischolar_client.py    │
+│  valida credenciais, mapas e capacidade de resolver IDs             │
+└────────────────────────────────┬────────────────────────────────────┘
+                                 │
+┌────────────────────────────────▼────────────────────────────────────┐
+│  CONTROLE OPERACIONAL                                               │
+│  aprovacao_lote.py · aprovacao_lote_store.py · lote_itens_store.py │
+│  resumo do lote → elegibilidade → aprovação explícita              │
+└────────────────────────────────┬────────────────────────────────────┘
+                                 │
+┌────────────────────────────────▼────────────────────────────────────┐
+│  RESOLUÇÃO + ENVIO                                                  │
+│  resolvedor_ids_ischolar.py · ischolar_client.py · envio_lote.py   │
+│  resolve IDs exigidos → monta payload oficial → envia por item      │
+└────────────────────────────────┬────────────────────────────────────┘
+                                 │
+┌────────────────────────────────▼────────────────────────────────────┐
+│  AUDITORIA E SUPORTE OPERACIONAL                                    │
+│  envio_lote_audit_store.py · alertas.py                             │
+│  auditoria por item + rastreabilidade + alertas operacionais        │
+└─────────────────────────────────────────────────────────────────────┘
+```
 
-- a planilha fixa é a única entrada oficial;
-- o lançamento canônico é a verdade interna do sistema;
-- `valor_ponderado` é artefato interno de validação e auditoria;
-- o valor enviado ao iScholar deve ser a nota bruta;
-- `sendavel=True` significa item final pronto para virar POST oficial;
-- o fluxo oficial é o novo pipeline auditável, e não o fluxo legado.
+### 3.1 Adapter Pattern — por que existe
 
-### 5.1 O que deve ser tratado como legado
+O `wide_format_adapter.py` foi introduzido para absorver o novo formato de planilha **sem tocar nas regras pedagógicas**. Em vez de reescrever `transformador.py` (849 linhas) e `avaliacao_rules.py` (577 linhas), o adaptador converte o novo formato para o formato que o pipeline já conhece.
 
-Tudo que ainda orbita em torno de conceitos como:
+**Benefícios:**
+- Isolamento total: nenhuma linha de regra de negócio foi alterada;
+- Retrocompatibilidade: planilhas no formato antigo continuam funcionando sem qualquer modificação;
+- Testabilidade: a camada de adaptação tem seus próprios 51 testes unitários;
+- **471 testes passando com 0 falhas** após a refatoração completa.
 
-- `consultar_notas`
-- `criar_nota`
-- `sync_notas_idempotente`
-- `identificacao`
-- `tipo`
-- `data_lancamento`
-- `observacao`
+### 3.2 Auto-detecção de formato
 
-deve ser tratado como legado ou compatibilidade transitória, não como rota oficial do sistema.
+`detectar_formato(colunas)` em `wide_format_adapter.py` classifica automaticamente:
 
----
-
-## 6. Componentes principais
-
-### 6.1 Entrada e normalização
-
-- `madan_planilha_mapper.py` — mapeia aliases, colunas obrigatórias e contexto canônico da linha.
-
-### 6.2 Regras pedagógicas
-
-- `avaliacao_rules.py` — centraliza regras explícitas de cálculo e interpretação pedagógica.
-
-### 6.3 Transformação
-
-- `transformador.py` — converte linha wide da planilha em lançamentos canônicos auditáveis.
-
-### 6.4 Validação pré-envio
-
-- `validacao_pre_envio.py` — qualifica os lançamentos antes da aprovação e do envio.
-
-### 6.5 Controle de lote
-
-- `aprovacao_lote.py`
-- `aprovacao_lote_store.py`
-- `lote_itens_store.py`
-
-Responsáveis por:
-
-- resumo do lote;
-- elegibilidade;
-- aprovação explícita;
-- persistência dos itens aprovados.
-
-### 6.6 Integração com iScholar
-
-- `resolvedor_ids_ischolar.py`
-- `ischolar_client.py`
-- `envio_lote.py`
-
-Responsáveis por:
-
-- resolver `id_matricula`, `id_disciplina`, `id_avaliacao` e `id_professor` quando aplicável;
-- montar o payload oficial;
-- enviar item a item;
-- registrar falhas parciais sem perder rastreabilidade.
-
-### 6.7 Discovery e autopreenchimento de mapas
-
-- `descobrir_ids_ischolar.py` — script standalone de discovery que chama a API real para descobrir shapes e IDs, sem modificar nenhum dado.
-
-### 6.8 Auditoria
-
-- `envio_lote_audit_store.py` — persiste auditoria do resultado por item.
-
-### 6.9 Observabilidade e suporte
-
-- `alertas.py`
-- `logger.py`
-
-Responsáveis por logging e alertas operacionais.
+| Formato | Critério de detecção | Rota |
+|---|---|---|
+| `wide_novo` | Presença de colunas `Disciplina - Frente X - Tipo` (regex) | Valida + despivota antes do pipeline |
+| `semi_wide_antigo` | Presença de colunas fixas `Disciplina` + `Frente - Professor` | Fluxo original sem alteração |
 
 ---
 
-## 7. Contrato atual com o iScholar
+## 4. Estrutura do Formato Wide
 
-### 7.1 Endpoints oficiais integrados
+### 4.1 Anatomia de uma coluna dinâmica
 
-O sistema integra os seguintes endpoints da API iScholar, todos autenticados via `X-Autorizacao` (token) + `X-Codigo-Escola` (headers):
+```
+Matemática  -  Frente A  -  AV 1 Obj
+│              │             │
+│              │             └─ Tipo de avaliação
+│              └─────────────── Frente → identifica o professor via mapa_professores.json
+└────────────────────────────── Disciplina → normalizada para slug canônico
+```
 
-#### Resolução de IDs (fluxo principal)
+**Regex de extração** (em `wide_format_adapter.py`):
 
-| Endpoint | Método | Função no sistema |
-|----------|--------|-------------------|
-| `/aluno/busca` | GET | Busca aluno por RA (`numero_re`), CPF ou `id_aluno`. Retorna `id_aluno`. |
+```python
+REGEX_COLUNA_DINAMICA = re.compile(
+    r"^(.+?)\s*-\s*(Frente\s+\S+)\s*-\s*(.+)$",
+    re.IGNORECASE,
+)
+```
+
+### 4.2 Exemplo de cabeçalho completo
+
+```
+Estudante | RA | Turma | Trimestre
+  Matemática - Frente Única - AV 1 Obj
+  Matemática - Frente Única - AV 1 Disc
+  Matemática - Frente Única - AV 2 Obj
+  Matemática - Frente Única - AV 2 Disc
+  Matemática - Frente Única - AV 3 Listas
+  Matemática - Frente Única - AV 3 Avaliacao
+  Matemática - Frente Única - Simulado
+  Matemática - Frente Única - Ponto Extra
+  Matemática - Frente Única - Recuperação
+  Física - Frente A - AV 1 Obj
+  Física - Frente A - AV 1 Disc
+  ...
+  Física - Frente B - AV 1 Obj
+  ...
+  Gramática - Frente Única - AV 1 Obj
+  ...
+```
+
+> Para a turma **1A**, o gerador produz 12 grupos disciplina-frente × 9 tipos de avaliação = **112 colunas** (incluindo as 4 fixas).
+
+### 4.3 Tipos de avaliação suportados
+
+| Coluna wide | Coluna canônica (pipeline interno) |
+|---|---|
+| `AV 1 Obj` | `AV 1 (OBJ)` |
+| `AV 1 Disc` | `AV 1 (DISC)` |
+| `AV 2 Obj` | `AV 2 (OBJ)` |
+| `AV 2 Disc` | `AV 2 (DISC)` |
+| `AV 3 Listas` | `AV 3 (listas)` |
+| `AV 3 Avaliacao` | `AV 3 (avaliação)` |
+| `Simulado` | `Simulado` |
+| `Ponto Extra` | `Ponto extra` |
+| `Recuperação` | `Recuperação` |
+
+### 4.4 Regras de preenchimento
+
+- Notas entre `0` e `10`;
+- `AV 1 (OBJ) + AV 1 (DISC) ≤ 10` — validado antes do envio;
+- Célula vazia = não se aplica (nunca lançado como zero);
+- `Faltou` = ausência registrada com flag;
+- Decimais com vírgula ou ponto são aceitos;
+- RA é obrigatório para resolução de matrícula no iScholar.
+
+---
+
+## 5. Componentes Principais
+
+### 5.1 Geração de templates
+
+- **`gerador_planilhas.py`** — gera planilhas Excel no formato wide por turma.
+  Funções principais:
+  - `descobrir_grupos_wide(serie, turma_letra)` → lista de `(disciplina, frente)` válidos para a turma
+  - `construir_cabecalho_wide(grupos)` → lista de nomes de coluna compatíveis com o adapter
+  - `gerar_planilha_turma(turma, trimestre, ano, alunos, output_dir)` → gera 1 arquivo `.xlsx`
+  - `gerar_todas_planilhas(trimestre, ano, alunos, output_dir)` → itera todas as turmas do roster
+
+### 5.2 Adaptador de formato
+
+- **`wide_format_adapter.py`** — Adapter Pattern entre formato wide e pipeline canônico.
+  Funções principais:
+  - `detectar_formato(colunas)` → `"wide_novo"` | `"semi_wide_antigo"`
+  - `validar_colunas_wide_novo(colunas)` → lista de problemas (vazia se ok)
+  - `despivotar_dataframe(df)` → DataFrame no formato semi-wide antigo
+  - `parsear_coluna_dinamica(nome)` → `ColunaDinamica` com `disciplina`, `frente`, `tipo_avaliacao`
+  - `construir_frente_professor(disciplina, frente)` → chave compatível com `mapa_professores.json`
+
+### 5.3 Entrada e normalização
+
+- **`madan_planilha_mapper.py`** — mapeia aliases, colunas obrigatórias e contexto canônico da linha.
+
+### 5.4 Regras pedagógicas
+
+- **`avaliacao_rules.py`** — centraliza regras explícitas de cálculo e interpretação pedagógica.
+
+### 5.5 Transformação
+
+- **`transformador.py`** — converte linha semi-wide em lançamentos canônicos auditáveis.
+
+### 5.6 Validação pré-envio
+
+- **`validacao_pre_envio.py`** — qualifica os lançamentos antes da aprovação e do envio.
+
+### 5.7 Compilador de turma (legado)
+
+- **`compilador_turma.py`** — compila planilhas multi-abas (formato antigo) para 1 linha por aluno × disciplina. Mantido para retrocompatibilidade com a flag `--turma-dir`.
+
+### 5.8 Controle de lote
+
+- **`aprovacao_lote.py`** / **`aprovacao_lote_store.py`** / **`lote_itens_store.py`**
+
+  Responsáveis por: resumo do lote, elegibilidade, aprovação explícita e persistência dos itens aprovados.
+
+### 5.9 Integração com iScholar
+
+- **`resolvedor_ids_ischolar.py`** / **`ischolar_client.py`** / **`envio_lote.py`**
+
+  Responsáveis por: resolver `id_matricula`, `id_disciplina`, `id_avaliacao`, `id_professor`; montar payload oficial; enviar por item; registrar falhas parciais sem perder rastreabilidade.
+
+### 5.10 Discovery e autopreenchimento de mapas
+
+- **`descobrir_ids_ischolar.py`** — script standalone de discovery, read-only, que chama a API real para descobrir shapes e IDs.
+
+### 5.11 Auditoria e observabilidade
+
+- **`envio_lote_audit_store.py`** — persiste auditoria do resultado por item.
+- **`alertas.py`** / **`logger.py`** — logging e alertas operacionais.
+
+---
+
+## 6. CLI Oficial (`cli_envio.py`)
+
+O `cli_envio.py` é o orquestrador oficial do pipeline.
+
+### 6.1 Fluxo interno
+
+| Etapa | O que faz |
+|---|---|
+| **ETAPA 1** | Carrega planilha (`.xlsx`, `.xls`, `.csv`). Tenta `header=0`; fallback para `header=1` se colunas não forem encontradas. |
+| **ETAPA 2** | **Auto-detecção de formato.** Se wide novo → valida + despivota via adapter. Se semi-wide → validação de template original. |
+| **ETAPA 3/4** | Gera lançamentos canônicos + validação pré-envio por linha. |
+| **ETAPA 5** | Gera e exibe resumo do lote. |
+| **ETAPA 6** | Preflight técnico (inicializa cliente, carrega mapas, instancia resolvedor). |
+| **ETAPA 6b** | Cria stores SQLite e estado inicial do lote. |
+| **ETAPA 7** | Aprovação explícita (automática via `--aprovador` ou interativa). |
+| **ETAPA 8** | Envio (dry-run ou real) + auditoria por item. |
+| **ETAPA 9** | Resultado final. |
+
+### 6.2 Exemplos de uso
+
+```bash
+# Dry run com planilha wide (nova):
+python cli_envio.py --planilha planilhas/1A_T1_2026.xlsx --lote-id t1-1A-2026 --dry-run
+
+# Envio real com aprovação automática:
+python cli_envio.py --planilha planilhas/1A_T1_2026.xlsx --lote-id t1-1A-2026 --aprovador "Pedro"
+
+# Envio real com confirmação interativa no terminal:
+python cli_envio.py --planilha planilhas/1A_T1_2026.xlsx --lote-id t1-1A-2026
+
+# Batch via diretório (formato antigo multi-abas, compilado automaticamente):
+python cli_envio.py --turma-dir planilhas/ --lote-id t1-2026 --dry-run
+
+# Mapas e DBs em caminhos explícitos:
+python cli_envio.py \
+    --planilha notas.xlsx \
+    --lote-id t1-1A-2026 \
+    --dry-run \
+    --mapa-disciplinas mapas/disciplinas.json \
+    --mapa-avaliacoes  mapas/avaliacoes.json  \
+    --mapa-professores mapas/professores.json \
+    --db-aprovacoes    aprovacoes.db          \
+    --db-itens         itens.db               \
+    --db-audit         audit.db
+```
+
+### 6.3 Argumentos disponíveis
+
+| Argumento | Obrigatório | Descrição |
+|---|---|---|
+| `--planilha` | Sim¹ | Caminho para o Excel/CSV de notas |
+| `--turma-dir` | Sim¹ | Diretório com planilhas multi-abas (formato legado) |
+| `--lote-id` | Sim | Identificador único do lote (ex: `t1-1A-2026`) |
+| `--dry-run` | Não | Valida e monta payloads sem POST real |
+| `--aprovador` | Não | Nome do aprovador (pula prompt interativo) |
+| `--mapa-disciplinas` | Não | Padrão: `mapa_disciplinas.json` |
+| `--mapa-avaliacoes` | Não | Padrão: `mapa_avaliacoes.json` |
+| `--mapa-professores` | Não | Padrão: `mapa_professores.json` |
+| `--professor-obrigatorio` | Não | Bloqueia lançamentos sem `id_professor` |
+| `--db-aprovacoes` | Não | Padrão: `aprovacoes_lote.db` |
+| `--db-itens` | Não | Padrão: `lote_itens.db` |
+| `--db-audit` | Não | Padrão: `envio_lote_audit.db` |
+
+¹ `--planilha` e `--turma-dir` são mutuamente exclusivos; exatamente um dos dois deve ser informado.
+
+### 6.4 Exit codes
+
+| Código | Significado |
+|---|---|
+| `0` | Sucesso |
+| `1` | Erro operacional inesperado |
+| `2` | Problema de entrada / planilha / template |
+| `3` | Lote não elegível / pré-condição violada |
+| `4` | Cancelamento do operador |
+| `5` | Configuração / mapas / credenciais / preflight técnico |
+
+---
+
+## 7. Gerador de Planilhas (`gerador_planilhas.py`)
+
+```bash
+# Gerar planilhas para todas as turmas do roster:
+python gerador_planilhas.py \
+    --trimestre T1 \
+    --ano 2026 \
+    --alunos roster.csv \
+    --output ./planilhas/
+
+# Saída esperada:
+# Roster carregado: 120 alunos
+# 6 planilha(s) gerada(s):
+#   planilhas/1A_T1_2026.xlsx
+#   planilhas/1B_T1_2026.xlsx
+#   ...
+```
+
+**Formato do CSV de roster** (`--alunos`):
+
+```csv
+Nome,RA,Turma
+Alice de Medeiros,1239,1A
+Bruno Carvalho,1101,1A
+Clara Fontes,1058,1B
+```
+
+Colunas aceitas (case-insensitive): `Nome` / `Estudante` / `Aluno`, `RA` / `Registro_Aluno`, `Turma` / `Sala` / `Classe`.
+
+---
+
+## 8. Dry-run
+
+O dry-run:
+
+- não faz POST real ao iScholar;
+- valida planilha, adaptação de formato e lote completo;
+- passa pelo fluxo de resolução e preflight com a configuração atual;
+- pode falhar por credencial, mapa ou resolução de IDs mesmo sem POST real.
+
+**Dry-run não deve ser interpretado como modo totalmente offline.**
+
+---
+
+## 9. Contrato com o iScholar
+
+### 9.1 Endpoints integrados
+
+#### Resolução de IDs
+
+| Endpoint | Método | Função |
+|---|---|---|
+| `/aluno/busca` | GET | Busca aluno por RA (`numero_re`). Retorna `id_aluno`. |
 | `/matricula/listar` | GET | Lista matrículas de um `id_aluno`. Retorna `id_matricula`. |
-| `/matricula/pega_alunos` | GET | **Fallback:** busca alunos de uma turma, retornando `id_aluno`, `id_matricula` e `numero_re` juntos. |
+| `/matricula/pega_alunos` | GET | **Fallback:** retorna `id_aluno`, `id_matricula` e `numero_re` para todos os alunos da turma. |
 
 #### Discovery e autopreenchimento de mapas
 
-| Endpoint | Método | Função no sistema |
-|----------|--------|-------------------|
-| `/disciplinas` | GET | Lista todas as disciplinas cadastradas na escola (id, nome, abreviação). |
-| `/funcionarios/professores` | GET | Lista todos os professores cadastrados (id_professor, nome_professor). |
+| Endpoint | Método | Função |
+|---|---|---|
+| `/disciplinas` | GET | Lista todas as disciplinas cadastradas (id, nome, abreviação). |
+| `/funcionarios/professores` | GET | Lista todos os professores cadastrados (id, nome). |
 
 #### Auditoria
 
-| Endpoint | Método | Função no sistema |
-|----------|--------|-------------------|
+| Endpoint | Método | Função |
+|---|---|---|
 | `/diario/notas` | GET | Consulta notas já lançadas para uma matrícula (reconciliação). |
 
-#### Lançamento (idempotente)
+#### Lançamento
 
-| Endpoint | Método | Função no sistema |
-|----------|--------|-------------------|
-| `/notas/lanca_nota` | POST | Lançamento principal de nota. Idempotente por contrato. |
+| Endpoint | Método | Função |
+|---|---|---|
+| `/notas/lanca_nota` | POST | Lançamento de nota. Idempotente por contrato. |
 
-### 7.2 Envelope padrão da API
-
-Todas as respostas da API iScholar seguem o envelope:
+### 9.2 Envelope padrão da API
 
 ```json
 {
   "status": "sucesso",
   "mensagem": "...",
-  "dados": ...
+  "dados": { ... }
 }
 ```
 
-O campo `dados` contém o payload real (dict ou lista). O sistema extrai automaticamente o conteúdo de `dados` em todas as funções de resposta.
+O campo `dados` contém o payload real. O sistema extrai automaticamente em todos os caminhos de resposta.
 
-> **Nota importante:** A API retorna IDs como strings (ex: `"id_matricula": "97"`, não `97`). O sistema converte automaticamente via `_coerce_int_strict()` e `int()` com tratamento de erro em todos os caminhos de extração.
+> **Nota:** A API retorna IDs como strings (ex: `"id_matricula": "97"`). O sistema converte automaticamente via `_coerce_int_strict()` em todos os caminhos de extração.
 
-### 7.3 Payload oficial de lançamento
+### 9.3 Payload oficial de lançamento
 
-O payload oficial de envio (POST `/notas/lanca_nota`) usa:
+POST `/notas/lanca_nota`:
 
-- `id_matricula` (int, obrigatório)
-- `id_disciplina` (int, obrigatório)
-- `id_avaliacao` (int, obrigatório)
-- `id_professor` (int, condicional — obrigatório somente quando a escola permite lançamentos de nota do mesmo componente por professores diferentes)
-- `valor` (float, obrigatório — nota bruta, não ponderada)
+| Campo | Tipo | Obrigatoriedade |
+|---|---|---|
+| `id_matricula` | `int` | Obrigatório |
+| `id_disciplina` | `int` | Obrigatório |
+| `id_avaliacao` | `int` | Obrigatório |
+| `id_professor` | `int` | Condicional (depende de `--professor-obrigatorio`) |
+| `valor` | `float` | Obrigatório — nota bruta, não ponderada |
 
-### 7.4 Semântica confirmada
+### 9.4 Semântica confirmada
 
 - `id_matricula` pode variar por turma/ano/série;
-- o aluno pode ser localizado via `/aluno/busca`;
-- o `id_aluno` retornado é único e permanente;
-- as matrículas podem ser listadas via `/matricula/listar`;
-- o valor enviado deve ser a nota pedagógica bruta;
 - o endpoint de lançamento é idempotente;
-- a autenticação usa `X-Autorizacao` e `X-Codigo-Escola`;
-- URL da API: mesma para homologação e produção (`https://api.ischolar.app`);
-- diferença entre ambientes: apenas o valor de `X-Codigo-Escola` (homologação: `madan_homolog`).
+- a autenticação usa `X-Autorizacao` + `X-Codigo-Escola`;
+- URL da API: `https://api.ischolar.app` (mesma para homologação e produção);
+- diferença entre ambientes: apenas o valor de `X-Codigo-Escola`.
 
-### 7.5 O que ainda depende de validação em homologação
+### 9.5 Pendências de homologação
 
-- ~~shape real das respostas~~ → **Parcialmente validado** (shapes de `/aluno/busca` e `/matricula/listar` confirmados; `/diario/notas` bloqueado para tokens de integração);
-- ~~critério formal para desempate de matrícula ambígua~~ → **Resolvido** (heurística por `status_matricula_diario == "MATRICULADO"` implementada);
-- ~~confirmação se `id_avaliacao` varia por trimestre~~ → **Confirmado** (IDs diferentes por trimestre, coletados manualmente da interface web do iScholar);
-- confirmação se `id_professor` é obrigatório para a escola Madan → **Pendente**;
-- POST real em homologação → **Pendente** (dry-run já passa com sucesso).
+- confirmação se `id_professor` é obrigatório para a escola Madan;
+- POST real em homologação (dry-run já passa com sucesso).
 
 ---
 
-## 8. Estratégia de resolução de IDs
+## 10. Estratégia de Resolução de IDs
 
-O resolvedor atual (`ResolvedorIDsHibrido`) é conservador e fail-closed.
+O resolvedor (`ResolvedorIDsHibrido`) é conservador e fail-closed.
 
-### 8.1 id_matricula — via API oficial
-
-Fluxo principal (2 chamadas):
-
-1. `buscar_aluno(ra=...)` → obtém `id_aluno`
-2. `listar_matriculas(id_aluno=...)` → obtém `id_matricula`
-
-**Fallback via `pega_alunos`** (1 chamada):
-
-Quando `buscar_aluno` retorna sucesso mas `id_aluno` não pode ser extraído da resposta, o sistema pode acionar `pega_alunos(id_turma=...)` que retorna `id_aluno`, `id_matricula` e `numero_re` juntos para todos os alunos da turma. O aluno é localizado pelo RA (comparação normalizada, fail-closed: `None` se zero ou múltiplos matches).
+### 10.1 `id_matricula` — via API oficial
 
 ```text
 buscar_aluno(ra="12345")
@@ -361,507 +512,138 @@ buscar_aluno(ra="12345")
     └─ id_aluno NÃO extraído? ──► pega_alunos(id_turma)
                                       │
                                       └─ encontrar_por_ra("12345")
-                                            │
                                             ├─ 1 match ──► id_aluno + id_matricula
-                                            └─ 0 ou N matches ──► BLOQUEIO (fail-closed)
+                                            └─ 0 ou N matches ──► BLOQUEIO
 ```
 
-### 8.2 id_disciplina — via DE-PARA local ou discovery
+### 10.2 `id_disciplina` — via DE-PARA local
 
-Resolvido por `mapa_disciplinas.json`.
+Resolvido por `mapa_disciplinas.json`. Autopreenchimento via `GET /disciplinas`.
 
-**Autopreenchimento:** O endpoint `GET /disciplinas` retorna todas as disciplinas cadastradas na escola. A função auxiliar `_gerar_mapa_disciplinas()` gera o esqueleto do mapa no formato `mapa_disciplinas_v1`:
+### 10.3 `id_avaliacao` — via DE-PARA local
 
-```json
-{
-  "schema": "mapa_disciplinas_v1",
-  "disciplinas": [
-    {"nome_planilha": "arte", "id_disciplina": 1},
-    {"nome_planilha": "matematica", "id_disciplina": 11}
-  ]
-}
+Resolvido por `mapa_avaliacoes.json`. IDs coletados manualmente da interface web do iScholar (sistema avaliativo ID=9, `BIM1`–`BIM7`).
+
+> **Limitação:** O endpoint `GET /diario/notas` está **bloqueado para tokens de integração**. IDs de avaliação não podem ser obtidos automaticamente.
+
+### 10.4 `id_professor` — via DE-PARA local
+
+Resolvido por `mapa_professores.json` (114 chaves no formato `"matematica a"`, `"fisica b"`, etc.). Autopreenchimento via `GET /funcionarios/professores`.
+
+**A chave de lookup é construída pelo adapter:**
+```python
+construir_frente_professor("Matemática", "Frente A")  # → "matematica a"
+construir_frente_professor("Gramática",  "Frente Única")  # → "gramatica"
 ```
 
-### 8.3 id_avaliacao — via DE-PARA local
+### 10.5 Postura do resolvedor
 
-Resolvido por `mapa_avaliacoes.json`.
-
-### 8.4 id_professor — via DE-PARA local ou discovery
-
-Resolvido por `mapa_professores.json`, quando necessário.
-
-**Autopreenchimento:** O endpoint `GET /funcionarios/professores` retorna todos os professores cadastrados. A função auxiliar `_gerar_mapa_professores()` gera o esqueleto do mapa no formato `mapa_professores_v1`:
-
-```json
-{
-  "schema": "mapa_professores_v1",
-  "professores": [
-    {"nome_planilha": "arnold schwarzenegger", "id_professor": 2},
-    {"nome_planilha": "maria silva", "id_professor": 5}
-  ]
-}
-```
-
-### 8.5 Postura do resolvedor
-
-O resolvedor é **fail-closed**:
-
-- matrícula ambígua bloqueia;
-- disciplina sem mapa bloqueia;
-- avaliação sem mapa bloqueia;
-- professor obrigatório sem mapa bloqueia;
-- ausência de identificador suficiente do aluno bloqueia;
-- múltiplos matches no fallback `pega_alunos` bloqueia.
-
-**Nenhuma inferência. Nenhum desempate automático. Bloqueio explícito com rastreabilidade.**
+**Fail-closed sem exceções:**
+matrícula ambígua · disciplina sem mapa · avaliação sem mapa · professor obrigatório sem mapa · identificador insuficiente do aluno → todos bloqueiam com rastreabilidade.
 
 ---
 
-## 9. Dataclasses de resultado da API
-
-O `ischolar_client.py` define dataclasses tipadas para cada tipo de operação:
+## 11. Dataclasses de Resultado da API
 
 | Dataclass | Endpoint | Campos relevantes |
-|-----------|----------|-------------------|
+|---|---|---|
 | `ResultadoBuscaAluno` | GET `/aluno/busca` | `sucesso`, `dados`, `erro_categoria` |
 | `ResultadoListagemMatriculas` | GET `/matricula/listar` | `sucesso`, `id_matricula_resolvido`, `rastreabilidade` |
 | `ResultadoListagemNotas` | GET `/diario/notas` | `sucesso`, `dados` |
 | `ResultadoLancamentoNota` | POST `/notas/lanca_nota` | `sucesso`, `idempotente`, `dry_run`, `payload` |
-| `ResultadoListagemDisciplinas` | GET `/disciplinas` | `sucesso`, `disciplinas` (lista extraída) |
-| `ResultadoListagemProfessores` | GET `/funcionarios/professores` | `sucesso`, `professores` (lista extraída) |
-| `ResultadoPegaAlunos` | GET `/matricula/pega_alunos` | `sucesso`, `alunos` (lista extraída) |
+| `ResultadoListagemDisciplinas` | GET `/disciplinas` | `sucesso`, `disciplinas` |
+| `ResultadoListagemProfessores` | GET `/funcionarios/professores` | `sucesso`, `professores` |
+| `ResultadoPegaAlunos` | GET `/matricula/pega_alunos` | `sucesso`, `alunos` |
 
-Todas seguem o padrão:
-
-- `sucesso: bool` — indica se a operação HTTP foi bem-sucedida;
-- `status_code: Optional[int]` — código HTTP da resposta;
-- `transitorio: bool` — se o erro é candidato a retry (rede/5xx);
-- `erro_categoria: Optional[str]` — classificação machine-readable (`"auth"`, `"validacao"`, `"http"`, `"rede"`);
-- `dados: Optional[Any]` — resposta bruta da API.
-
----
-
-## 10. CLI oficial (cli_envio.py)
-
-O `cli_envio.py` é o orquestrador oficial do fluxo novo.
-
-### 10.1 Fluxo interno atual
-
-1. Carregar planilha;
-2. Validar template fixo;
-3. Gerar lançamentos canônicos e validar linha a linha;
-4. Gerar resumo do lote;
-5. Executar preflight técnico;
-6. Criar stores e estado inicial do lote;
-7. Solicitar aprovação;
-8. Enviar (dry-run ou real);
-9. Imprimir resultado final.
-
-### 10.2 Flag `--turma-dir`
-
-O CLI aceita `--turma-dir` como alternativa a `--planilha` para processamento batch de planilhas por turma:
-
-```bash
-python cli_envio.py --turma-dir planilhas/ --lote-id t1-2026 --dry-run
-```
-
-Quando usado:
-1. Compila automaticamente cada `.xlsx` multi-abas (gerado por `gerador_planilhas.py`) via `compilador_turma.py`
-2. Concatena todos os resultados num único DataFrame
-3. Prossegue com o fluxo normal (ETAPAs 1-9)
-
-Mutuamente exclusivo com `--planilha`.
-
-### 10.3 Exit codes
-
-| Código | Significado |
-|--------|-------------|
-| `0` | Sucesso |
-| `1` | Erro operacional inesperado |
-| `2` | Problema de entrada / planilha / template |
-| `3` | Lote não elegível / pré-condição violada |
-| `4` | Cancelamento do operador |
-| `5` | Configuração / mapas / credenciais / preflight técnico |
-
-### 10.3 Bancos locais
-
-O CLI suporta sobrescrever explicitamente os bancos usados no fluxo:
-
-- `--db-aprovacoes`
-- `--db-itens`
-- `--db-audit`
-
-Defaults continuam vindo de env ou nomes padrão.
-
----
-
-## 11. Dry-run
-
-O dry-run:
-
-- não faz POST real ao iScholar;
-- valida planilha e lote;
-- passa pelo fluxo de resolução e preflight conforme a configuração atual;
-- pode falhar por credencial, mapa ou resolução de IDs mesmo sem POST real.
-
-**Dry-run não deve ser interpretado como modo totalmente offline.**
+Todas seguem o padrão: `sucesso: bool`, `status_code`, `transitorio: bool`, `erro_categoria`, `dados`.
 
 ---
 
 ## 12. Discovery de IDs (`descobrir_ids_ischolar.py`)
 
-Script standalone de discovery, read-only, que chama a API real para descobrir shapes e IDs.
-
-### 12.1 Uso
+Script standalone, read-only. Não modifica dados.
 
 ```bash
-# Discovery básico com um RA de teste conhecido:
+# Discovery básico:
 python descobrir_ids_ischolar.py --ra <RA_TESTE>
 
-# Com respostas brutas da API (para debug):
+# Com respostas brutas da API:
 python descobrir_ids_ischolar.py --ra <RA_TESTE> --verbose
 
 # Gerar esqueletos dos mapas JSON:
 python descobrir_ids_ischolar.py --ra <RA_TESTE> --gerar-mapas
 ```
 
-### 12.2 Etapas internas
-
-| Etapa | O que faz | Endpoint |
-|-------|-----------|----------|
-| 1. Conectividade | Valida token e código escola | Headers |
-| 2. Buscar aluno | Chama com RA, mostra shape, extrai `id_aluno` | GET `/aluno/busca` |
-| 3. Listar matrículas | Chama com `id_aluno`, extrai `id_matricula` | GET `/matricula/listar` |
-| 4. Listar notas | Mostra IDs de disciplina/avaliação visíveis | GET `/diario/notas` |
-| 5. Gerar esqueletos | (com `--gerar-mapas`) Imprime JSON nos schemas dos mapas | — |
-
-### 12.3 Autopreenchimento de mapas via API
-
-Com os novos endpoints, o discovery pode também chamar:
-
-- `GET /disciplinas` → gera esqueleto de `mapa_disciplinas.json` com todas as disciplinas da escola;
-- `GET /funcionarios/professores` → gera esqueleto de `mapa_professores.json` com todos os professores.
-
-Isso elimina a necessidade de preencher manualmente os mapas de disciplinas e professores — basta revisar os nomes normalizados gerados.
-
-> **Limitação atual:** O endpoint `GET /diario/notas` está **bloqueado para tokens de integração** (retorna "Matricula inexistente ou não vinculada ao requisitante"). Isso significa que os IDs de avaliação não podem ser obtidos automaticamente via API — foram coletados manualmente da interface web do iScholar (sistema avaliativo ID=9). Não existe endpoint separado para listar avaliações.
+| Etapa | Endpoint |
+|---|---|
+| 1. Conectividade | Headers de autenticação |
+| 2. Buscar aluno por RA | GET `/aluno/busca` |
+| 3. Listar matrículas | GET `/matricula/listar` |
+| 4. Listar notas existentes | GET `/diario/notas` |
+| 5. Gerar esqueletos (com `--gerar-mapas`) | `GET /disciplinas`, `GET /funcionarios/professores` |
 
 ---
 
-## 13. Configuração do ambiente
+## 13. Configuração do Ambiente
 
-### 13.1 `.env.example`
-
-O projeto inclui um `.env.example` com todas as variáveis documentadas:
+### 13.1 Arquivo `.env`
 
 ```bash
 cp .env.example .env
 # Editar .env com as credenciais reais
 ```
 
-Variáveis principais:
-
 | Variável | Obrigatória | Descrição |
-|----------|-------------|-----------|
-| `ISCHOLAR_BASE_URL` | Sim | `https://api.ischolar.app` (mesma para homologação e produção) |
+|---|---|---|
+| `ISCHOLAR_BASE_URL` | Sim | `https://api.ischolar.app` |
 | `ISCHOLAR_API_TOKEN` | Sim | Token gerado na interface do iScholar |
-| `ISCHOLAR_CODIGO_ESCOLA` | Sim | `madan` (valor do campo `escola` no JWT do token) |
+| `ISCHOLAR_CODIGO_ESCOLA` | Sim | Valor do campo `"escola"` no payload JWT do token |
 
 ### 13.2 Ambientes
 
-- **Produção/Homologação Madan:** `ISCHOLAR_CODIGO_ESCOLA=madan` (valor extraído do payload JWT do token gerado). Interface em `https://madan.ischolar.com.br/`.
-- O valor de `ISCHOLAR_CODIGO_ESCOLA` deve corresponder ao campo `"escola"` presente no payload JWT do token de integração.
-- A `ISCHOLAR_BASE_URL` é a mesma para qualquer ambiente: `https://api.ischolar.app`.
-- **Nunca configure múltiplos ambientes ao mesmo tempo.**
+- **Madan:** `ISCHOLAR_CODIGO_ESCOLA=madan` (extraído do JWT do token de integração);
+- A `ISCHOLAR_BASE_URL` é a mesma para qualquer ambiente;
+- Interface web: `https://madan.ischolar.com.br/`.
 
-> **Nota:** Inicialmente assumiu-se `madan_homolog` como código da escola em homologação, mas o JWT real gerado contém `"escola":"madan"`. Use sempre o valor do JWT.
-
----
-
-## 14. Estado atual do projeto
-
-### 14.1 Já implementado
-
-- template fixo da planilha;
-- presença de RA no schema canônico;
-- transformação da linha da planilha em lançamentos canônicos;
-- validação pré-envio;
-- aprovação manual do lote;
-- persistência de estado do lote e itens aprovados;
-- client oficial completo do iScholar (7 endpoints integrados);
-- resolvedor híbrido de IDs com fallback `pega_alunos`;
-- envio por item;
-- auditoria por item;
-- CLI operacional do fluxo novo;
-- mapas JSON estruturados;
-- suporte a dry-run;
-- script de discovery de IDs;
-- autopreenchimento de mapas via API;
-- AV1/AV2 consolidados por soma simples (OBJ + DISC ≤ 10), confirmado pelo pedagógico;
-- 3ª série bloqueada explicitamente (`status=bloqueado`, com motivo claro);
-- regras de recuperação trimestral (T1/T2) e final implementadas, com exceção de T3;
-- rendimento anual por média ponderada 30-30-40 implementado;
-- registro de 37 professores (`professores_madan.py`) transcrito do PDF oficial;
-- cross-validation professor × disciplina × turma com aviso não-bloqueante;
-- status e motivo_status centralizados em `StatusLancamento` e `MotivoStatus` em `avaliacao_rules.py`;
-- `gerador_planilhas.py` — geração automatizada de planilhas Excel multi-abas por turma com dados pré-preenchidos;
-- `compilador_turma.py` — compilação de planilhas multi-abas para o formato pipeline (1 linha = 1 aluno × 1 disciplina);
-- flag `--turma-dir` no CLI para processamento batch de planilhas por turma;
-- 402 testes automatizados passando;
-- **[2026-03-28] `mapa_disciplinas.json` preenchido com 16 IDs reais** coletados da interface web do iScholar (Coordenação → Disciplinas);
-- **[2026-03-28] `mapa_avaliacoes.json` preenchido com 19 IDs reais** (92–110) do sistema avaliativo ID=9 "ENSINO MÉDIO (1ª E 2ª SÉRIE) - 2026", incluindo metadados de BIM1–BIM7;
-- **[2026-03-28] `mapa_professores.json` preenchido com 25 IDs reais** de professores, organizados em 114 chaves (aliases por frente: "matematica a", "fisica b", etc.);
-- **[2026-03-28] Auto-detecção de header** em `cli_envio.py`: tenta `header=0` primeiro; se colunas obrigatórias não forem encontradas, tenta `header=1` automaticamente (planilha Madan tem linha de cabeçalho mesclada);
-- **[2026-03-28] Dry-run passando com sucesso** em todas as 8 ETAPAs com planilha de teste de 10 linhas × 3 alunos × 7 disciplinas (30 itens sendáveis, 0 erros).
-
-### 14.2 Hardening concluído
-
-**Stores SQLite corrigidos para `:memory:`:**
-
-- `lote_itens_store.py`
-- `aprovacao_lote_store.py`
-- `envio_lote_audit_store.py`
-
-Todos mantêm conexão compartilhada por instância em `:memory:` e preservam o comportamento antigo para banco em arquivo.
-
-**`cli_envio.py` endurecido para homologação:**
-
-- preflight técnico antes da criação inicial do lote;
-- importação defensiva de `IScholarClient` para preservar testabilidade;
-- exit codes centralizados no `main()` com exceções específicas;
-- processamento resiliente por linha;
-- helper explícito para falha interna por linha;
-- remoção de acesso a atributos privados do resolvedor;
-- flags para `--db-aprovacoes`, `--db-itens` e `--db-audit`.
-
-**Bug do envelope `"dados"` corrigido:**
-
-- `listar_matriculas()` agora reconhece o envelope padrão `"dados"` da API iScholar como primeira chave na extração de itens;
-- tratamento adicional para quando `"dados"` contém um dict único (convertido para lista de 1 item);
-- compatibilidade mantida com chaves legadas (`"matriculas"`, `"items"`, `"data"`).
-
-**Semântica de dry-run esclarecida:**
-
-- não faz POST real;
-- ainda pode exigir credenciais, mapas e resolução de IDs.
-
-**Auto-detecção de header na planilha Excel:**
-
-- `_carregar_planilha()` tenta `header=0` primeiro;
-- se nenhuma coluna obrigatória for encontrada (planilha Madan com célula mesclada "DADOS OBRIGATÓRIOS" na linha 1), faz retry com `header=1`;
-- solução robusta que funciona tanto com planilha modelo (header na linha 1) quanto com planilha Madan real (header na linha 2).
-
-### 14.3 Provisório / sujeito a validação
-
-- ~~comportamento exato de resolução de aluno e matrícula com a resposta real da API~~ → **Validado** (shapes de `/aluno/busca` e `/matricula/listar` confirmados com API real);
-- ~~shape final dos mapas conforme ambiente real do Madan~~ → **Validado** (3 mapas preenchidos com IDs reais, dry-run passa);
-- parte da semântica pedagógica ainda dependente de validação operacional;
-- procedimento formal de retry/reprocessamento em produção;
-- **POST real em homologação** → **Pendente** (dry-run OK, próximo passo é envio real com 1–3 alunos);
-- **Teste de idempotência** → **Pendente** (reenviar mesmo lote para confirmar que não duplica notas).
-
-### 14.4 Depende do TI do iScholar
-
-- ~~acesso ao ambiente de homologação~~ → **Resolvido** (código escola = `madan`, extraído do JWT);
-- ~~credenciais e código da escola de teste~~ → **Resolvido** (token de integração gerado, `ISCHOLAR_CODIGO_ESCOLA=madan`);
-- ~~shapes reais das respostas~~ → **Parcialmente validado** (`/aluno/busca` e `/matricula/listar` confirmados; `/diario/notas` bloqueado para tokens de integração — não afeta o envio);
-- confirmação se `id_professor` é obrigatório para a escola Madan → **Pendente** (funciona sem, mas precisa confirmação formal).
-
-### 14.5 Depende do Madan
-
-- ~~adoção formal do template fixo~~ → **Em andamento** (planilha modelo gerada e preenchida com dados reais);
-- garantia de preenchimento do RA;
-- fechamento final das regras pedagógicas ainda provisórias;
-- **piloto controlado** → **Próximo passo** (enviar notas de 1–3 alunos reais e verificar no diário do iScholar);
-- política operacional de exceções.
+> **Atenção:** Use sempre o valor do JWT, não assuma `madan_homolog` ou outro sufixo.
 
 ---
 
-## 15. Regras pedagógicas: o que está fechado e o que não está
+## 14. Estado Atual do Projeto
 
-### 15.1 Fechado no sistema
+### 14.1 Concluído
 
-O sistema já implementa regras pedagógicas explícitas e auditáveis, em vez de heurísticas silenciosas.
+- **Formato wide (novo):** gerador, adapter, auto-detecção e despivotamento;
+- **Retrocompatibilidade total:** planilhas no formato semi-wide antigo continuam funcionando;
+- **471 testes automatizados passando** (0 falhas) após a refatoração completa do pipeline;
+- Template wide gerado com cabeçalho derivado de `professores_madan.py`;
+- Adapter Pattern com isolamento total das regras pedagógicas;
+- `mapa_disciplinas.json`: 16 IDs reais coletados da interface web do iScholar;
+- `mapa_avaliacoes.json`: 19 IDs reais (92–110) do sistema avaliativo ID=9 "ENSINO MÉDIO (1ª E 2ª SÉRIE) - 2026";
+- `mapa_professores.json`: 25 IDs reais, 114 chaves por frente (`"matematica a"`, `"fisica b"`, etc.);
+- Dry-run passando com sucesso em todas as 9 etapas;
+- AV1/AV2 consolidados por soma simples (OBJ + DISC ≤ 10), validado pelo pedagógico;
+- 3ª série bloqueada explicitamente com motivo claro;
+- Regras de recuperação trimestral (T1/T2) e final implementadas;
+- Rendimento anual por média ponderada 30-30-40 implementado;
+- 37 professores registrados em `professores_madan.py` conforme PDF oficial;
+- Cross-validation professor × disciplina × turma com aviso não-bloqueante;
+- Stores SQLite com `:memory:` para testes, arquivo para produção;
+- Heurística de matrícula por `status_matricula_diario == "MATRICULADO"`.
 
-### 15.2 Ainda não completamente fechado
+### 14.2 Pendente
 
-As seguintes frentes ainda exigem validação final do Madan ou confirmação operacional:
-
-- política final de AV3 incompleta (quando apenas listas ou apenas avaliação estão presentes);
-- política final de Ponto extra em casos de borda (avaliação "fechada");
-- como as regras de recuperação devem aparecer no diário do iScholar;
-- ~~IDs reais de professores no `mapa_professores.json`~~ → **Resolvido** (25 IDs reais preenchidos; 10 aliases permanecem com ID=0 — professores que não lecionam para 1ª/2ª série).
-
-O projeto prefere:
-
-- erro explícito;
-- pendência clara;
-- bloqueio seguro;
-- DE-PARA provisório bem documentado;
-
-e evita heurísticas silenciosas perigosas.
-
----
-
-## 16. Fluxo operacional esperado
-
-1. Preencher a planilha oficial;
-2. Validar colunas obrigatórias e RAs;
-3. Rodar `cli_envio.py` em `--dry-run`;
-4. Corrigir erros encontrados;
-5. Repetir dry-run até o lote ficar consistente;
-6. Confirmar o preflight técnico;
-7. Aprovar o lote;
-8. Executar envio real;
-9. Conferir resultado no iScholar;
-10. Registrar divergências e ajustes.
+- POST real em homologação com notas reais;
+- Confirmação se `id_professor` é obrigatório para a escola Madan;
+- Coleta manual dos IDs de avaliação para T2 e T3 (via interface web do iScholar).
 
 ---
 
-## 17. Fluxo de homologação esperado
+## 15. Semântica Oficial do Domínio
 
-1. Copiar `.env.example` para `.env` e configurar credenciais;
-2. Rodar `descobrir_ids_ischolar.py --ra <RA_TESTE>` para validar conectividade e shapes;
-3. Rodar com `--gerar-mapas` para criar esqueletos dos mapas;
-4. Preencher mapas com IDs reais (disciplinas e professores podem ser autopreenchidos via API);
-5. Rodar dry-run completo;
-6. Validar payloads e resolução de IDs;
-7. Executar POST real em homologação (piloto 1-3 alunos);
-8. Conferir nota no diário do iScholar;
-9. Confirmar idempotência (reenvio não duplica);
-10. Só depois considerar produção (primeiro envio acompanhado pelo desenvolvedor).
-
-> Consultar `checklist_homologacao.md` para o checklist detalhado de go/no-go.
-
----
-
-## 18. O que não fazer
-
-- Não tentar adaptar planilhas arbitrárias;
-- Não inventar mapeamentos no chute;
-- Não tratar o fluxo legado como principal;
-- Não supor que homologação e produção são equivalentes sem validação;
-- Não endurecer regra pedagógica provisória sem confirmação do Madan;
-- Não apagar bancos locais de auditoria/estado sem motivo operacional claro.
-
----
-
-## 19. Estrutura resumida do repositório
-
-**Núcleo do fluxo oficial novo:**
-
-- `cli_envio.py` — orquestrador principal
-- `madan_planilha_mapper.py` — mapeamento e validação do template
-- `avaliacao_rules.py` — regras pedagógicas + `StatusLancamento` + `MotivoStatus`
-- `transformador.py` — transformação canônica
-- `validacao_pre_envio.py` — validação pré-envio com cross-validation de professor
-- `professores_madan.py` — registro de 37 professores do PDF + busca + validação
-- `gerador_planilhas.py` — geração de planilhas multi-abas por turma (1 aba por disciplina-frente-professor)
-- `compilador_turma.py` — compilação de planilhas multi-abas → formato pipeline
-- `aprovacao_lote.py` — controle de lote e aprovação
-- `aprovacao_lote_store.py` — persistência de aprovações (SQLite)
-- `lote_itens_store.py` — persistência de itens aprovados (SQLite)
-- `resolvedor_ids_ischolar.py` — resolvedor híbrido de IDs (fail-closed)
-- `ischolar_client.py` — cliente HTTP para a API iScholar (7 endpoints)
-- `envio_lote.py` — envio por item com rastreabilidade
-- `envio_lote_audit_store.py` — auditoria por item (SQLite)
-
-**Discovery e configuração:**
-
-- `descobrir_ids_ischolar.py` — script standalone de discovery de IDs
-- `.env.example` — template de configuração do ambiente
-- `mapa_disciplinas.json` — DE-PARA de disciplinas
-- `mapa_avaliacoes.json` — DE-PARA de avaliações
-- `mapa_professores.json` — DE-PARA de professores
-
-**Documentação operacional:**
-
-- `operacoes.md` — guia de operação para o operador
-- `checklist_homologacao.md` — checklist de homologação e go/no-go
-
-**Suporte operacional:**
-
-- `logger.py`
-- `alertas.py`
-
-**Compatibilidade / transição / auxiliares:**
-
-- `worker.py`
-- `monitor.py`
-- `webhook_google_sheets.py`
-- outros componentes legados ainda presentes no repositório
-
----
-
-## 20. Cobertura de testes
-
-O projeto possui **402 testes automatizados** organizados em:
-
-| Suite | Cobertura |
-|-------|-----------|
-| `test_ischolar_client.py` | Sync idempotente, conflitos, fallbacks legados |
-| `test_resolvedor_ids_ischolar.py` | Resolução de IDs, mapas, fail-closed |
-| `test_cli_envio.py` | Fluxo completo do CLI, exit codes |
-| `test_transformador.py` | Transformação canônica, consolidação AV1/AV2, bloqueio 3ª série |
-| `test_validacao_pre_envio.py` | Validação pré-envio, cross-validation de professor |
-| `test_aprovacao_lote.py` | Aprovação, elegibilidade, snapshot |
-| `test_madan_planilha_mapper.py` | Template, colunas, aliases |
-| `test_avaliacao_rules.py` | Regras pedagógicas |
-| `test_novos_endpoints.py` | Novos endpoints, envelope "dados", fallback pega_alunos, autopreenchimento de mapas, coerção int/string |
-| `test_professores_madan.py` | Registro de professores, busca, siglas, validação cruzada |
-| `test_recuperacao.py` | Regras de recuperação trimestral/final, rendimento anual ponderado |
-| `test_gerador_planilhas.py` | Geração de planilhas multi-abas, roster CSV, metadata, proteção de colunas |
-| `test_compilador_turma.py` | Compilação multi-abas → pipeline, round-trip, formato de saída |
-| `test_alertas.py` | Alertas operacionais |
-| `test_snapshot_store.py` | Persistência de snapshots |
-| `test_job_store.py` | Persistência de jobs |
-| `test_worker_retry.py` | Retry do worker legado |
-| `test_worker_semantica_envio.py` | Semântica de envio legado |
-
----
-
-## 21. Resumo executivo
-
-Este projeto já possui:
-
-- arquitetura correta;
-- semântica interna forte;
-- controle operacional de lote;
-- rastreabilidade;
-- stores endurecidos;
-- CLI endurecido para homologação;
-- 7 endpoints da API integrados com dataclasses tipadas;
-- fallback robusto para resolução de IDs;
-- autopreenchimento de mapas via API;
-- script de discovery para homologação;
-- regras pedagógicas de AV1/AV2, recuperação e bloqueio de 3ª série confirmadas e implementadas;
-- registro de 37 professores integrado com cross-validation;
-- geração automatizada de planilhas por turma e compilação para formato pipeline;
-- flag `--turma-dir` no CLI para processamento batch de turmas;
-- 402 testes automatizados passando;
-- base técnica suficiente para validar a integração real.
-
-### 21.1 Estado em 2026-03-28
-
-**Marcos alcançados:**
-
-- **3 mapas JSON preenchidos com IDs reais** do iScholar (disciplinas, avaliações, professores) — coletados manualmente da interface web;
-- **Dry-run passando em todas as 8 ETAPAs** com planilha de teste real (10 linhas, 3 alunos, 7 disciplinas);
-- **Token de integração ativo** com `ISCHOLAR_CODIGO_ESCOLA=madan`;
-- **Auto-detecção de header** implementada para planilhas com célula mesclada no cabeçalho;
-- **Sistema avaliativo mapeado** — ID=9 "ENSINO MÉDIO (1ª E 2ª SÉRIE) - 2026", 3 trimestres (30-30-40), 5 avaliações por trimestre, 3 recuperações + final.
-
-**O que falta para finalizar:**
-
-| # | Item | Estimativa | Bloqueante? |
-|---|------|------------|-------------|
-| 1 | POST real em homologação (1–3 alunos) | 10 min | Sim |
-| 2 | Verificar nota no diário do iScholar | 5 min | Sim |
-| 3 | Teste de idempotência (reenviar mesmo lote) | 5 min | Sim |
-| 4 | Confirmar se `id_professor` é obrigatório | 5 min | Não (funciona sem) |
-| 5 | Envio de lote maior (10+ alunos) | 15 min | Não |
-| 6 | Documentar procedimento operacional final | 30 min | Não |
-
-**Estimativa total para finalização: ~1–2 horas de trabalho operacional.**
-
-O pipeline está **tecnicamente completo**. O que resta é validação operacional (POST real + confirmação visual no iScholar) e ajustes finos baseados no resultado.
+- A planilha wide por turma é a única entrada oficial para o fluxo novo;
+- O lançamento canônico é a verdade interna do sistema;
+- `valor_ponderado` é artefato interno de validação e auditoria — nunca é enviado;
+- O valor enviado ao iScholar deve ser a **nota bruta**;
+- `sendavel=True` significa item final pronto para virar POST oficial;
+- Tudo que orbita conceitos como `consultar_notas`, `criar_nota`, `sync_notas_idempotente`, `identificacao`, `tipo`, `data_lancamento` deve ser tratado como legado.

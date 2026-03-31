@@ -1,12 +1,13 @@
 """
-gerador_planilhas.py — Gera planilhas Excel pré-preenchidas, uma por turma.
+gerador_planilhas.py — Gera planilhas Excel no formato wide (1 linha por aluno).
 
-Cada arquivo contém uma aba por combinação disciplina-frente-professor,
-com colunas de identidade (Nome, RA, Turma) pré-preenchidas e protegidas,
-e colunas de nota editáveis.
+Gera 1 arquivo por turma com uma única aba "Notas":
+- 4 colunas fixas pré-preenchidas: Estudante, RA, Turma, Trimestre
+- Colunas dinâmicas por (disciplina, frente, tipo de avaliação):
+      "{Disciplina} - Frente {X} - {Tipo}"
+  ex: "Matemática - Frente A - AV 1 Obj"
 
-O output é consumido pelo compilador_turma.py, que converte o formato
-multi-abas de volta para o formato pipeline (1 linha = 1 aluno × 1 disciplina).
+O output é consumido diretamente pelo wide_format_adapter.py no pipeline ETL.
 
 Uso:
     python gerador_planilhas.py --trimestre T1 --ano 2026 --alunos roster.csv --output ./planilhas/
@@ -16,7 +17,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
 import re
 import unicodedata
 from dataclasses import dataclass
@@ -37,7 +37,7 @@ from professores_madan import (
 
 
 # ---------------------------------------------------------------------------
-# Constantes
+# Constantes — formato antigo (mantidas para compatibilidade)
 # ---------------------------------------------------------------------------
 
 BULLET = "\u2022"  # "•" — indica "todas as turmas/frentes"
@@ -67,48 +67,92 @@ TODAS_COLUNAS = COLUNAS_IDENTIDADE + COLUNAS_NOTA + COLUNAS_CONFERENCIA
 
 
 # ---------------------------------------------------------------------------
-# Dataclass para configuração de aba
+# Constantes — formato wide novo
+# ---------------------------------------------------------------------------
+
+DISCIPLINA_DISPLAY: dict[str, str] = {
+    "arte":                   "Arte",
+    "biologia":               "Biologia",
+    "educacao fisica":        "Educação Física",
+    "filosofia":              "Filosofia",
+    "fisica":                 "Física",
+    "geografia":              "Geografia",
+    "gramatica":              "Gramática",
+    "historia":               "História",
+    "ingles":                 "Inglês",
+    "interpretacao de texto": "Interpretação de Texto",
+    "literatura":             "Literatura",
+    "matematica":             "Matemática",
+    "quimica":                "Química",
+    "redacao":                "Redação",
+    "sociologia":             "Sociologia",
+    "xadrez":                 "Xadrez",
+}
+"""Mapa slug canônico → nome de exibição na planilha."""
+
+TIPOS_AVALIACAO_WIDE: list[str] = [
+    "AV 1 Obj",
+    "AV 1 Disc",
+    "AV 2 Obj",
+    "AV 2 Disc",
+    "AV 3 Listas",
+    "AV 3 Avaliacao",
+    "Simulado",
+    "Ponto Extra",
+    "Recuperação",
+]
+"""
+Sufixos de tipo de avaliação para as colunas dinâmicas.
+
+Cada string, ao ser normalizada por wide_format_adapter._normalizar_texto(),
+deve bater exatamente com uma chave de MAPA_TIPO_AVALIACAO:
+    "AV 1 Obj"    → "av 1 obj"    → "AV 1 (OBJ)"
+    "AV 1 Disc"   → "av 1 disc"   → "AV 1 (DISC)"
+    "AV 3 Listas" → "av 3 listas" → "AV 3 (listas)"
+    "AV 3 Avaliacao" → "av 3 avaliacao" → "AV 3 (avaliação)"
+    "Recuperação" → "recuperacao" → "Recuperação"
+"""
+
+COLUNAS_FIXAS_WIDE = ["Estudante", "RA", "Turma", "Trimestre"]
+"""Colunas fixas do formato wide — devem ser as 4 primeiras."""
+
+
+# ---------------------------------------------------------------------------
+# Dataclass TabConfig — mantida para retrocompatibilidade com testes existentes
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class TabConfig:
-    """Representa uma aba a ser criada na planilha de uma turma."""
-    disciplina: str           # Nome canônico (ex: "matematica")
-    frente: str               # Frente (ex: "F2") ou "" se professor cobre todas
-    professor_display: str    # Nome de exibição do professor
-    professor_nome: str       # Nome completo do professor
+    """Representa uma combinação disciplina-frente-professor (formato legado)."""
+    disciplina: str
+    frente: str
+    professor_display: str
+    professor_nome: str
 
     @property
     def nome_aba(self) -> str:
-        """Nome da aba no Excel (max 31 chars)."""
         if self.frente:
             raw = f"{self.disciplina}_{self.frente}_{self.professor_display}"
         else:
             raw = f"{self.disciplina}_{self.professor_display}"
-        # Excel limita nomes de abas a 31 caracteres
-        sanitized = _sanitizar_nome_aba(raw)
-        return sanitized[:31]
+        return _sanitizar_nome_aba(raw)[:31]
 
 
 def _sanitizar_nome_aba(nome: str) -> str:
-    """Remove caracteres proibidos em nomes de aba do Excel."""
-    # Remove acentos
+    """Remove acentos e caracteres proibidos em nomes de aba do Excel."""
     nfkd = unicodedata.normalize("NFD", nome)
     sem_acento = "".join(c for c in nfkd if unicodedata.category(c) != "Mn")
-    # Substitui caracteres proibidos no Excel: \ / * ? : [ ]
     return re.sub(r'[\\/*?\[\]:]', '_', sem_acento)
 
 
 # ---------------------------------------------------------------------------
-# Lógica de descoberta de abas por turma
+# Descoberta de abas (formato legado — mantida)
 # ---------------------------------------------------------------------------
 
 def descobrir_tabs_para_turma(serie: int, turma_letra: str) -> list[TabConfig]:
     """
-    Consulta o registro de professores para determinar quais combinações
-    disciplina-frente-professor se aplicam a uma turma.
-
-    Retorna lista de TabConfig deduplicada e ordenada.
+    Retorna lista de TabConfig (formato legado) para a turma.
+    Mantida para retrocompatibilidade.
     """
     disciplinas = sorted(set(SIGLA_PARA_DISCIPLINA.values()))
     tabs: set[tuple[str, str, str, str]] = set()
@@ -119,14 +163,10 @@ def descobrir_tabs_para_turma(serie: int, turma_letra: str) -> list[TabConfig]:
             all_frentes = p.frentes_med + p.frentes_ext + p.frentes_ita
             if not all_frentes:
                 continue
-
-            # Verifica se tem bullet (= todas as frentes)
             has_bullet = BULLET in all_frentes
-
             if has_bullet:
                 tabs.add((disc, "", p.nome_display, p.nome))
             else:
-                # Expande frentes compostas como "F2/F4"
                 expanded: set[str] = set()
                 for f in all_frentes:
                     for sub in f.split("/"):
@@ -140,6 +180,65 @@ def descobrir_tabs_para_turma(serie: int, turma_letra: str) -> list[TabConfig]:
         [TabConfig(d, f, pd, pn) for d, f, pd, pn in tabs],
         key=lambda t: (t.disciplina, t.frente, t.professor_display),
     )
+
+
+# ---------------------------------------------------------------------------
+# Descoberta e construção de colunas — formato wide novo
+# ---------------------------------------------------------------------------
+
+def descobrir_grupos_wide(serie: int, turma_letra: str) -> list[tuple[str, str]]:
+    """
+    Retorna lista ordenada de (disciplina_display, frente_display) para a turma.
+
+    Regras de mapeamento de frentes:
+    - Disciplina com 1 entrada (frente="" bullet ou único código) → "Frente Única"
+    - Disciplina com N entradas → "Frente A", "Frente B", ... (ordem alfabética dos códigos)
+
+    Os nomes gerados são compatíveis com parsear_coluna_dinamica() e com as
+    chaves de mapa_professores.json via construir_frente_professor().
+    """
+    tabs = descobrir_tabs_para_turma(serie, turma_letra)
+
+    por_disc: dict[str, list[str]] = {}
+    for tab in tabs:
+        por_disc.setdefault(tab.disciplina, []).append(tab.frente)
+
+    grupos: list[tuple[str, str]] = []
+    letras = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+    for disc_slug in sorted(por_disc.keys()):
+        frentes_raw = sorted(set(por_disc[disc_slug]))
+        disc_display = DISCIPLINA_DISPLAY.get(disc_slug, disc_slug.capitalize())
+
+        if len(frentes_raw) == 1:
+            # Um único professor/frente → Frente Única
+            grupos.append((disc_display, "Frente Única"))
+        else:
+            # Múltiplas frentes → ordenar e atribuir letras A, B, C...
+            for i in range(len(frentes_raw)):
+                grupos.append((disc_display, f"Frente {letras[i]}"))
+
+    return grupos
+
+
+def construir_cabecalho_wide(grupos: list[tuple[str, str]]) -> list[str]:
+    """
+    Constrói a lista completa de nomes de colunas para o formato wide.
+
+    Estrutura:
+        ["Estudante", "RA", "Turma", "Trimestre",
+         "Disciplina X - Frente A - AV 1 Obj",
+         "Disciplina X - Frente A - AV 1 Disc",
+         ...]
+
+    Os nomes dinâmicos são gerados no padrão exato que parsear_coluna_dinamica()
+    em wide_format_adapter.py reconhece.
+    """
+    cabecalho = list(COLUNAS_FIXAS_WIDE)
+    for disc_display, frente_display in grupos:
+        for tipo in TIPOS_AVALIACAO_WIDE:
+            cabecalho.append(f"{disc_display} - {frente_display} - {tipo}")
+    return cabecalho
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +267,6 @@ def carregar_roster_csv(caminho: str | Path) -> list[Aluno]:
         if reader.fieldnames is None:
             raise ValueError(f"CSV vazio ou sem cabeçalho: {path}")
 
-        # Mapeia cabeçalhos case-insensitive
         header_map: dict[str, str] = {}
         for field in reader.fieldnames:
             low = field.strip().lower()
@@ -201,125 +299,77 @@ def agrupar_alunos_por_turma(alunos: list[Aluno]) -> dict[str, list[Aluno]]:
     grupos: dict[str, list[Aluno]] = {}
     for a in alunos:
         grupos.setdefault(a.turma, []).append(a)
-    # Ordena alunos por nome dentro de cada turma
     for turma in grupos:
         grupos[turma].sort(key=lambda x: x.nome)
     return dict(sorted(grupos.items()))
 
 
 # ---------------------------------------------------------------------------
-# Geração de planilha Excel
+# Estilos Excel
 # ---------------------------------------------------------------------------
 
-# Estilos
-_FILL_HEADER = PatternFill(start_color="4472C4", end_color="4472C4", fill_type="solid")
-_FONT_HEADER = Font(bold=True, color="FFFFFF", size=11)
-_FILL_IDENTIDADE = PatternFill(start_color="D9E2F3", end_color="D9E2F3", fill_type="solid")
-_FONT_IDENTIDADE = Font(size=11)
-_PROTECTION_LOCKED = Protection(locked=True)
-_PROTECTION_UNLOCKED = Protection(locked=False)
-_ALIGNMENT_CENTER = Alignment(horizontal="center", vertical="center")
+_FILL_HEADER    = PatternFill(start_color="1F3864", end_color="1F3864", fill_type="solid")
+_FILL_FIXAS     = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+_FONT_HEADER    = Font(bold=True, color="FFFFFF", size=10, name="Arial")
+_FONT_DADOS     = Font(size=10, name="Arial")
+_ALIGN_CENTER   = Alignment(horizontal="center", vertical="center", wrap_text=True)
+_ALIGN_LEFT     = Alignment(horizontal="left",   vertical="center")
 
 
-def _criar_aba_disciplina(
+# ---------------------------------------------------------------------------
+# Geração da aba wide
+# ---------------------------------------------------------------------------
+
+def _criar_aba_notas_wide(
     wb: openpyxl.Workbook,
-    tab: TabConfig,
+    cabecalho: list[str],
     alunos: list[Aluno],
     turma: str,
+    trimestre: str,
 ) -> None:
-    """Cria uma aba de disciplina com cabeçalhos e dados pré-preenchidos."""
-    ws = wb.create_sheet(title=tab.nome_aba)
+    """
+    Cria a aba "Notas" no formato wide:
+    - Linha 1: cabeçalho completo
+    - Linhas 2+: 1 aluno por linha, colunas fixas pré-preenchidas, notas em branco
+    """
+    ws = wb.create_sheet(title="Notas")
+    n_fixas = len(COLUNAS_FIXAS_WIDE)
 
-    # Proteção da sheet: cells locked by default, unlock specific ones
-    ws.protection.sheet = True
-    ws.protection.password = ""  # Proteção sem senha (apenas para evitar edição acidental)
-
-    # Header row
-    for col_idx, col_name in enumerate(TODAS_COLUNAS, 1):
-        cell = ws.cell(row=1, column=col_idx, value=col_name)
+    # --- Cabeçalho ---
+    for c_idx, col in enumerate(cabecalho, 1):
+        cell = ws.cell(row=1, column=c_idx, value=col)
         cell.font = _FONT_HEADER
         cell.fill = _FILL_HEADER
-        cell.alignment = _ALIGNMENT_CENTER
-        cell.protection = _PROTECTION_LOCKED
+        cell.alignment = _ALIGN_CENTER
 
-    # Larguras de coluna
-    ws.column_dimensions["A"].width = 35  # Nome
-    ws.column_dimensions["B"].width = 15  # RA
-    ws.column_dimensions["C"].width = 10  # Turma
-    for i in range(4, len(TODAS_COLUNAS) + 1):
-        ws.column_dimensions[get_column_letter(i)].width = 14
+    # --- Dados dos alunos ---
+    for r_idx, aluno in enumerate(alunos, 2):
+        valores_fixos = [aluno.nome, aluno.ra, turma, trimestre]
+        for c_idx, val in enumerate(valores_fixos, 1):
+            cell = ws.cell(row=r_idx, column=c_idx, value=val)
+            cell.fill = _FILL_FIXAS
+            cell.font = _FONT_DADOS
+            cell.alignment = _ALIGN_LEFT if c_idx == 1 else _ALIGN_CENTER
+        # Colunas de nota ficam em branco (professores preenchem)
 
-    # Dados dos alunos
-    n_id_cols = len(COLUNAS_IDENTIDADE)
-    n_nota_cols = len(COLUNAS_NOTA)
+    # --- Larguras ---
+    ws.column_dimensions["A"].width = 30   # Estudante
+    ws.column_dimensions["B"].width = 8    # RA
+    ws.column_dimensions["C"].width = 8    # Turma
+    ws.column_dimensions["D"].width = 11   # Trimestre
+    for c in range(n_fixas + 1, len(cabecalho) + 1):
+        ws.column_dimensions[get_column_letter(c)].width = 20
 
-    for row_idx, aluno in enumerate(alunos, 2):
-        # Colunas de identidade (protegidas)
-        for col_idx, val in enumerate([aluno.nome, aluno.ra, turma], 1):
-            cell = ws.cell(row=row_idx, column=col_idx, value=val)
-            cell.fill = _FILL_IDENTIDADE
-            cell.font = _FONT_IDENTIDADE
-            cell.protection = _PROTECTION_LOCKED
+    # --- Altura do cabeçalho ---
+    ws.row_dimensions[1].height = 55
 
-        # Colunas de nota (editáveis)
-        for col_idx in range(n_id_cols + 1, n_id_cols + n_nota_cols + 1):
-            cell = ws.cell(row=row_idx, column=col_idx)
-            cell.protection = _PROTECTION_UNLOCKED
-
-        # Colunas de conferência (fórmulas, protegidas)
-        for col_idx in range(n_id_cols + n_nota_cols + 1, len(TODAS_COLUNAS) + 1):
-            cell = ws.cell(row=row_idx, column=col_idx)
-            cell.protection = _PROTECTION_LOCKED
-
-    # Freeze first row + identity columns
-    ws.freeze_panes = "D2"
+    # --- Congelar colunas fixas + linha de cabeçalho ---
+    ws.freeze_panes = "E2"
 
 
-def _criar_aba_metadata(
-    wb: openpyxl.Workbook,
-    turma: str,
-    trimestre: str,
-    ano: int,
-    tabs: list[TabConfig],
-) -> None:
-    """Cria aba _metadata oculta com informações da planilha."""
-    ws = wb.create_sheet(title="_metadata")
-
-    # Metadados gerais
-    ws.cell(row=1, column=1, value="chave")
-    ws.cell(row=1, column=2, value="valor")
-
-    serie = extrair_serie_da_turma(turma)
-    metadata = [
-        ("trimestre", trimestre),
-        ("turma", turma),
-        ("serie", str(serie) if serie else ""),
-        ("ano", str(ano)),
-        ("gerado_em", date.today().isoformat()),
-        ("total_abas", str(len(tabs))),
-    ]
-
-    for i, (k, v) in enumerate(metadata, 2):
-        ws.cell(row=i, column=1, value=k)
-        ws.cell(row=i, column=2, value=v)
-
-    # Mapa de abas
-    ws.cell(row=10, column=1, value="nome_aba")
-    ws.cell(row=10, column=2, value="disciplina")
-    ws.cell(row=10, column=3, value="frente")
-    ws.cell(row=10, column=4, value="professor")
-    ws.cell(row=10, column=5, value="professor_nome_completo")
-
-    for i, tab in enumerate(tabs, 11):
-        ws.cell(row=i, column=1, value=tab.nome_aba)
-        ws.cell(row=i, column=2, value=tab.disciplina)
-        ws.cell(row=i, column=3, value=tab.frente)
-        ws.cell(row=i, column=4, value=tab.professor_display)
-        ws.cell(row=i, column=5, value=tab.professor_nome)
-
-    # Ocultar aba
-    ws.sheet_state = "hidden"
-
+# ---------------------------------------------------------------------------
+# Geração de planilha por turma (entrypoint principal)
+# ---------------------------------------------------------------------------
 
 def gerar_planilha_turma(
     turma: str,
@@ -329,7 +379,11 @@ def gerar_planilha_turma(
     output_dir: str | Path,
 ) -> Path:
     """
-    Gera um arquivo Excel para uma turma com abas por disciplina-frente-professor.
+    Gera um arquivo Excel para uma turma no formato wide (1 aba "Notas").
+
+    O cabeçalho é construído dinamicamente a partir do registro de professores
+    da turma, garantindo que as colunas geradas sejam reconhecidas pelo
+    wide_format_adapter.py no pipeline ETL.
 
     Retorna o caminho do arquivo gerado.
     """
@@ -346,39 +400,30 @@ def gerar_planilha_turma(
         )
 
     # Extrai letra da turma
-    turma_str = str(turma).strip()
     turma_letra = ""
-    for c in turma_str:
+    for c in str(turma).strip():
         if c.isalpha():
             turma_letra = c.upper()
             break
-
     if not turma_letra:
         raise ValueError(f"Não foi possível extrair letra da turma: {turma!r}")
 
-    # Descobre abas necessárias
-    tabs = descobrir_tabs_para_turma(serie, turma_letra)
-    if not tabs:
+    grupos = descobrir_grupos_wide(serie, turma_letra)
+    if not grupos:
         raise ValueError(
-            f"Nenhuma combinação disciplina-professor encontrada para "
+            f"Nenhuma combinação disciplina-frente encontrada para "
             f"turma {turma!r} (série {serie}, letra {turma_letra})"
         )
 
-    # Cria workbook
+    cabecalho = construir_cabecalho_wide(grupos)
+
     wb = openpyxl.Workbook()
-    # Remove sheet default
-    default_sheet = wb.active
-    if default_sheet is not None:
-        wb.remove(default_sheet)
+    default = wb.active
+    if default is not None:
+        wb.remove(default)
 
-    # Cria abas de disciplina
-    for tab in tabs:
-        _criar_aba_disciplina(wb, tab, alunos, turma)
+    _criar_aba_notas_wide(wb, cabecalho, alunos, turma, trimestre)
 
-    # Cria aba metadata
-    _criar_aba_metadata(wb, turma, trimestre, ano, tabs)
-
-    # Salva
     filename = f"{turma}_{trimestre}_{ano}.xlsx"
     filepath = output_path / filename
     wb.save(str(filepath))
@@ -393,7 +438,7 @@ def gerar_todas_planilhas(
     output_dir: str | Path,
 ) -> list[Path]:
     """
-    Gera planilhas para todas as turmas presentes no roster.
+    Gera planilhas wide para todas as turmas presentes no roster.
 
     Retorna lista de caminhos dos arquivos gerados.
     """
@@ -403,7 +448,7 @@ def gerar_todas_planilhas(
     for turma, alunos_turma in grupos.items():
         serie = extrair_serie_da_turma(turma)
         if serie is None or serie not in SERIES_SUPORTADAS:
-            continue  # Pula turmas de séries não suportadas
+            continue
 
         filepath = gerar_planilha_turma(
             turma=turma,
@@ -423,7 +468,7 @@ def gerar_todas_planilhas(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Gera planilhas Excel pré-preenchidas por turma."
+        description="Gera planilhas Excel no formato wide por turma."
     )
     parser.add_argument("--trimestre", required=True, help="Trimestre (T1, T2, T3)")
     parser.add_argument("--ano", type=int, required=True, help="Ano letivo (ex: 2026)")

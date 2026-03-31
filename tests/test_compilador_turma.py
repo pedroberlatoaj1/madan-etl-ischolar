@@ -1,12 +1,13 @@
 """
 Testes para compilador_turma.py — compilação de planilha multi-abas para formato pipeline.
 
-Inclui teste de round-trip: gerar → preencher notas → compilar → validar formato.
+NOTA: O compilador_turma.py opera no formato antigo (multi-abas). Os fixtures
+criam planilhas nesse formato diretamente via openpyxl, sem depender do
+gerar_planilhas.py (que agora gera formato wide).
 """
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import openpyxl
@@ -20,16 +21,112 @@ from compilador_turma import (
     compilar_planilha_para_arquivo,
     compilar_diretorio,
 )
-from gerador_planilhas import (
-    Aluno,
-    gerar_planilha_turma,
-    COLUNAS_NOTA,
-)
+from gerador_planilhas import Aluno, COLUNAS_NOTA
+
+
+# ---------------------------------------------------------------------------
+# Helper — cria planilha no formato antigo (multi-abas + _metadata)
+# ---------------------------------------------------------------------------
+
+COLUNAS_IDENTIDADE_ANTIGO = ["Nome", "RA", "Turma"]
+
+COLUNAS_CONFERENCIA_ANTIGO = ["Nota sem a AV 3", "Nota com a AV 3", "Nota Final"]
+
+TODAS_COLUNAS_ANTIGO = COLUNAS_IDENTIDADE_ANTIGO + COLUNAS_NOTA + COLUNAS_CONFERENCIA_ANTIGO
+
+
+def _criar_planilha_formato_antigo(
+    path: Path,
+    turma: str,
+    trimestre: str,
+    ano: int,
+    alunos: list[Aluno],
+    abas: list[dict],
+) -> Path:
+    """
+    Cria uma planilha no formato antigo (multi-abas + _metadata) para testes.
+
+    abas: list de dicts com keys 'disciplina', 'frente', 'professor'
+    """
+    wb = openpyxl.Workbook()
+    default = wb.active
+    if default is not None:
+        wb.remove(default)
+
+    for aba_info in abas:
+        disc = aba_info["disciplina"]
+        frente = aba_info.get("frente", "")
+        prof = aba_info.get("professor", "Prof")
+        if frente:
+            nome_aba = f"{disc}_{frente}_{prof}"[:31]
+        else:
+            nome_aba = f"{disc}_{prof}"[:31]
+
+        ws = wb.create_sheet(title=nome_aba)
+
+        # Header
+        for c, col in enumerate(TODAS_COLUNAS_ANTIGO, 1):
+            ws.cell(row=1, column=c, value=col)
+
+        # Dados dos alunos
+        for r, aluno in enumerate(alunos, 2):
+            ws.cell(row=r, column=1, value=aluno.nome)
+            ws.cell(row=r, column=2, value=aluno.ra)
+            ws.cell(row=r, column=3, value=turma)
+
+    # Aba _metadata
+    ws_meta = wb.create_sheet(title="_metadata")
+    ws_meta.cell(row=1, column=1, value="chave")
+    ws_meta.cell(row=1, column=2, value="valor")
+    metadata = [
+        ("trimestre", trimestre),
+        ("turma", turma),
+        ("serie", turma[0] if turma[0].isdigit() else ""),
+        ("ano", str(ano)),
+        ("gerado_em", "2026-03-31"),
+        ("total_abas", str(len(abas))),
+    ]
+    for i, (k, v) in enumerate(metadata, 2):
+        ws_meta.cell(row=i, column=1, value=k)
+        ws_meta.cell(row=i, column=2, value=v)
+
+    # Mapa de abas
+    ws_meta.cell(row=10, column=1, value="nome_aba")
+    ws_meta.cell(row=10, column=2, value="disciplina")
+    ws_meta.cell(row=10, column=3, value="frente")
+    ws_meta.cell(row=10, column=4, value="professor")
+    ws_meta.cell(row=10, column=5, value="professor_nome_completo")
+
+    for i, aba_info in enumerate(abas, 11):
+        disc = aba_info["disciplina"]
+        frente = aba_info.get("frente", "")
+        prof = aba_info.get("professor", "Prof")
+        if frente:
+            nome_aba = f"{disc}_{frente}_{prof}"[:31]
+        else:
+            nome_aba = f"{disc}_{prof}"[:31]
+        ws_meta.cell(row=i, column=1, value=nome_aba)
+        ws_meta.cell(row=i, column=2, value=disc)
+        ws_meta.cell(row=i, column=3, value=frente)
+        ws_meta.cell(row=i, column=4, value=prof)
+        ws_meta.cell(row=i, column=5, value=prof)
+
+    ws_meta.sheet_state = "hidden"
+
+    wb.save(str(path))
+    wb.close()
+    return path
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+ABAS_PADRAO = [
+    {"disciplina": "matematica", "frente": "F1", "professor": "Luan"},
+    {"disciplina": "fisica", "frente": "F1", "professor": "Cavaco"},
+]
+
 
 @pytest.fixture
 def alunos_1a() -> list[Aluno]:
@@ -41,21 +138,20 @@ def alunos_1a() -> list[Aluno]:
 
 @pytest.fixture
 def planilha_1a(alunos_1a: list[Aluno], tmp_path: Path) -> Path:
-    """Gera planilha da turma 1A e retorna o caminho."""
-    return gerar_planilha_turma("1A", "T1", 2026, alunos_1a, tmp_path)
+    """Gera planilha no formato antigo (multi-abas) para turma 1A."""
+    path = tmp_path / "1A_T1_2026.xlsx"
+    return _criar_planilha_formato_antigo(
+        path, "1A", "T1", 2026, alunos_1a, ABAS_PADRAO,
+    )
 
 
 @pytest.fixture
 def planilha_1a_com_notas(planilha_1a: Path) -> Path:
-    """Planilha 1A com notas preenchidas em uma aba."""
+    """Planilha 1A com notas preenchidas na primeira aba."""
     wb = openpyxl.load_workbook(str(planilha_1a))
 
-    # Preenche notas na primeira aba de disciplina
     abas_disc = [s for s in wb.sheetnames if s != "_metadata"]
     ws = wb[abas_disc[0]]
-
-    # Desprotege para editar notas de teste
-    ws.protection.sheet = False
 
     # Alice (row 2): AV1(OBJ)=4, AV1(DISC)=3
     ws.cell(row=2, column=4, value=4)   # AV 1 (OBJ)
@@ -111,7 +207,6 @@ class TestLerMetadata:
             assert aba["professor"], f"Aba {aba['nome_aba']} sem professor"
 
     def test_sem_metadata_levanta_erro(self, tmp_path: Path):
-        # Cria um xlsx sem aba _metadata
         wb = openpyxl.Workbook()
         wb.active.title = "dados"
         path = tmp_path / "sem_meta.xlsx"
@@ -198,45 +293,44 @@ class TestCompilarParaArquivo:
 class TestCompilarDiretorio:
     def test_compila_todos_xlsx(self, alunos_1a: list[Aluno], tmp_path: Path):
         input_dir = tmp_path / "planilhas"
+        input_dir.mkdir()
         output_dir = tmp_path / "pipeline"
 
-        # Gera planilha
-        filepath = gerar_planilha_turma("1A", "T1", 2026, alunos_1a, input_dir)
+        filepath = _criar_planilha_formato_antigo(
+            input_dir / "1A_T1_2026.xlsx", "1A", "T1", 2026, alunos_1a, ABAS_PADRAO,
+        )
 
-        # Preenche uma nota para que o compilador produza output
+        # Preenche uma nota
         wb = openpyxl.load_workbook(str(filepath))
         abas_disc = [s for s in wb.sheetnames if s != "_metadata"]
         ws = wb[abas_disc[0]]
-        ws.protection.sheet = False
         ws.cell(row=2, column=4, value=8)  # AV1 OBJ para Alice
         wb.save(str(filepath))
         wb.close()
 
-        # Compila
         arquivos = compilar_diretorio(input_dir, output_dir)
         assert len(arquivos) == 1
         assert "pipeline" in arquivos[0].name
 
 
 # ---------------------------------------------------------------------------
-# TestRoundTrip — teste de integração completo
+# TestRoundTrip — teste de integração formato antigo
 # ---------------------------------------------------------------------------
 
 class TestRoundTrip:
     """
-    Teste round-trip: gera planilha → preenche notas → compila → verifica
-    que o output tem o formato exato esperado pelo pipeline (cli_envio.py).
+    Teste round-trip: cria planilha formato antigo → preenche notas → compila
+    → verifica que o output tem o formato exato esperado pelo pipeline.
     """
 
     def test_round_trip_formato_pipeline(self, alunos_1a: list[Aluno], tmp_path: Path):
-        # 1. Gera planilha
-        filepath = gerar_planilha_turma("1A", "T1", 2026, alunos_1a, tmp_path)
+        filepath = _criar_planilha_formato_antigo(
+            tmp_path / "1A_T1_2026.xlsx", "1A", "T1", 2026, alunos_1a, ABAS_PADRAO,
+        )
 
-        # 2. Preenche notas
         wb = openpyxl.load_workbook(str(filepath))
         abas_disc = [s for s in wb.sheetnames if s != "_metadata"]
         ws = wb[abas_disc[0]]
-        ws.protection.sheet = False
 
         # Alice: AV1(OBJ)=4, AV1(DISC)=3, AV2(OBJ)=5, AV2(DISC)=4
         ws.cell(row=2, column=4, value=4)
@@ -247,10 +341,7 @@ class TestRoundTrip:
         wb.save(str(filepath))
         wb.close()
 
-        # 3. Compila
         df = compilar_planilha_turma(filepath)
-
-        # 4. Verifica formato pipeline
         assert len(df) == 1  # Só Alice tem notas
 
         row = df.iloc[0]
@@ -267,7 +358,9 @@ class TestRoundTrip:
 
     def test_round_trip_multiplas_abas(self, alunos_1a: list[Aluno], tmp_path: Path):
         """Verifica que notas em abas diferentes geram linhas distintas."""
-        filepath = gerar_planilha_turma("1A", "T1", 2026, alunos_1a, tmp_path)
+        filepath = _criar_planilha_formato_antigo(
+            tmp_path / "1A_T1_2026.xlsx", "1A", "T1", 2026, alunos_1a, ABAS_PADRAO,
+        )
 
         wb = openpyxl.load_workbook(str(filepath))
         abas_disc = [s for s in wb.sheetnames if s != "_metadata"]
@@ -275,7 +368,6 @@ class TestRoundTrip:
         # Preenche notas em 2 abas diferentes para Alice
         for aba_name in abas_disc[:2]:
             ws = wb[aba_name]
-            ws.protection.sheet = False
             ws.cell(row=2, column=4, value=7)  # AV1(OBJ) para Alice
 
         wb.save(str(filepath))
@@ -283,24 +375,22 @@ class TestRoundTrip:
 
         df = compilar_planilha_turma(filepath)
 
-        # Alice deve ter 2 linhas (uma por disciplina)
         alice_rows = df[df["Estudante"] == "Alice Silva"]
         assert len(alice_rows) == 2
 
-        # Disciplinas devem ser diferentes
         disciplinas = list(alice_rows["Disciplina"])
-        assert len(set(disciplinas)) == 2, "Mesma disciplina em linhas diferentes"
+        assert len(set(disciplinas)) == 2
 
     def test_round_trip_aluno_sem_nota_ignorado(self, alunos_1a: list[Aluno], tmp_path: Path):
         """Alunos sem nenhuma nota preenchida não aparecem no output."""
-        filepath = gerar_planilha_turma("1A", "T1", 2026, alunos_1a, tmp_path)
+        filepath = _criar_planilha_formato_antigo(
+            tmp_path / "1A_T1_2026.xlsx", "1A", "T1", 2026, alunos_1a, ABAS_PADRAO,
+        )
 
         wb = openpyxl.load_workbook(str(filepath))
         abas_disc = [s for s in wb.sheetnames if s != "_metadata"]
         ws = wb[abas_disc[0]]
-        ws.protection.sheet = False
 
-        # Só Alice tem nota, Bruno não
         ws.cell(row=2, column=4, value=8)  # Alice: AV1(OBJ)
 
         wb.save(str(filepath))

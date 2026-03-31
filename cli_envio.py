@@ -90,6 +90,12 @@ from resolvedor_ids_ischolar import (
     validar_mapa_disciplinas,
 )
 from transformador import linha_madan_para_lancamentos
+from wide_format_adapter import (
+    detectar_formato,
+    despivotar_dataframe,
+    validar_colunas_wide_novo,
+    FORMATO_WIDE_NOVO,
+)
 from validacao_pre_envio import (
     validar_pre_envio_linha,
     criar_resultado_falha_linha,
@@ -600,20 +606,38 @@ def main() -> None:
         _ok(f"Planilha carregada: {Path(args.planilha).name} ({len(df)} linhas)")
 
         # ------------------------------------------------------------------
-        # ETAPA 2: Validação do template fixo
+        # ETAPA 2: Validação do template + auto-detecção de formato
         # ------------------------------------------------------------------
         _titulo("ETAPA 2 — Validando template")
-        try:
-            _validar_template(df)
-            _ok("Template válido — todas as colunas obrigatórias presentes.")
-        except TemplateInvalidoError as exc:
-            _titulo("ERRO — Template inválido")
-            _erro(str(exc))
-            _info("Colunas obrigatórias do template fixo:")
-            for c in COLUNAS_OBRIGATORIAS_TEMPLATE:
-                _info(f"  • {c}")
-            _info("\nCorrija a planilha e tente novamente.")
-            sys.exit(2)
+
+        formato = detectar_formato(list(df.columns))
+
+        if formato == FORMATO_WIDE_NOVO:
+            _info("Formato wide novo detectado (1 linha por aluno, colunas dinâmicas)")
+            problemas = validar_colunas_wide_novo(list(df.columns))
+            if problemas:
+                _titulo("ERRO — Template wide novo inválido")
+                for p in problemas:
+                    _erro(p)
+                sys.exit(2)
+            _ok("Template wide novo válido.")
+
+            _info("Despivotando para formato pipeline (1 linha por aluno × disciplina × frente)...")
+            linhas_antes = len(df)
+            df = despivotar_dataframe(df)
+            _ok(f"Despivotamento concluído: {linhas_antes} linhas → {len(df)} linhas virtuais")
+        else:
+            try:
+                _validar_template(df)
+                _ok("Template válido — todas as colunas obrigatórias presentes.")
+            except TemplateInvalidoError as exc:
+                _titulo("ERRO — Template inválido")
+                _erro(str(exc))
+                _info("Colunas obrigatórias do template fixo:")
+                for c in COLUNAS_OBRIGATORIAS_TEMPLATE:
+                    _info(f"  • {c}")
+                _info("\nCorrija a planilha e tente novamente.")
+                sys.exit(2)
 
         ra_col = next((c for c in df.columns if c.strip().upper() == "RA"), None)
         if ra_col is not None:
