@@ -24,6 +24,7 @@ from professores_madan import (
     gerar_chaves_professor,
     gerar_mapa_professores_esqueleto,
     gerar_relatorio_cobertura,
+    parece_chave_disciplina_frente,
     sigla_para_disciplina,
     validar_professor_disciplina_turma,
 )
@@ -259,3 +260,81 @@ class TestIntegridadeRegistro:
             assert disc is not None, (
                 f"{prof.nome} ({prof.materia_sigla}) não tem disciplina canônica"
             )
+
+
+# ---------------------------------------------------------------------------
+# parece_chave_disciplina_frente — distinguir alias de disciplina/frente de nome
+# ---------------------------------------------------------------------------
+
+class TestPareceChaveDisciplinaFrente:
+    """
+    Garante que parece_chave_disciplina_frente() identifica corretamente
+    aliases de disciplina/frente (produzidos pelo wide_format_adapter) e não
+    os confunde com nomes de professor.
+
+    Regressão dos warnings PROFESSOR_NAO_ENCONTRADO_REGISTRO falsos detectados
+    em 2026-04-01 durante homologação assistida.
+    """
+
+    # --- chaves que DEVEM ser reconhecidas como alias disciplina/frente ---
+
+    def test_frente_unica_arte(self):
+        """'arte' é alias de Frente Única de Arte — não nome de pessoa."""
+        assert parece_chave_disciplina_frente("arte") is True
+
+    def test_frente_unica_biologia(self):
+        assert parece_chave_disciplina_frente("biologia") is True
+
+    def test_frente_unica_ingles(self):
+        assert parece_chave_disciplina_frente("ingles") is True
+
+    def test_frente_unica_gramatica(self):
+        assert parece_chave_disciplina_frente("gramatica") is True
+
+    def test_frente_multipla_fisica_a(self):
+        """'fisica a' é alias de Física Frente A — não nome de pessoa."""
+        assert parece_chave_disciplina_frente("fisica a") is True
+
+    def test_frente_multipla_fisica_b(self):
+        assert parece_chave_disciplina_frente("fisica b") is True
+
+    def test_frente_multipla_fisica_c(self):
+        assert parece_chave_disciplina_frente("fisica c") is True
+
+    def test_frente_multipla_matematica_a(self):
+        assert parece_chave_disciplina_frente("matematica a") is True
+
+    def test_frente_multipla_matematica_b(self):
+        assert parece_chave_disciplina_frente("matematica b") is True
+
+    def test_acento_normalizado(self):
+        """Chaves com acento devem ser reconhecidas após normalização."""
+        assert parece_chave_disciplina_frente("Física A") is True
+        assert parece_chave_disciplina_frente("Inglês") is True
+
+    # --- valores que NÃO devem ser reconhecidos como alias ---
+
+    def test_apelido_professor_puro_nao_e_alias(self):
+        """'cavaco' é apelido de professor — deve ir para lookup normal."""
+        assert parece_chave_disciplina_frente("cavaco") is False
+
+    def test_apelido_carioca_nao_e_alias(self):
+        assert parece_chave_disciplina_frente("carioca") is False
+
+    def test_formato_com_separador_nao_e_alias(self):
+        """Presença de ' - ' indica nome explícito — não é chave pura."""
+        assert parece_chave_disciplina_frente("arte - lenice") is False
+        assert parece_chave_disciplina_frente("fisica - cavaco") is False
+        assert parece_chave_disciplina_frente("biologia - jamine") is False
+
+    def test_nome_professor_inexistente_nao_e_alias(self):
+        assert parece_chave_disciplina_frente("professor inexistente") is False
+
+    def test_string_vazia_nao_e_alias(self):
+        assert parece_chave_disciplina_frente("") is False
+
+    def test_identificador_frente_com_digito_nao_e_alias(self):
+        """Frentes numéricas (ex.: 'fisica 1') não são o padrão do pipeline — não suprimir."""
+        # O pipeline produz "fisica a", "fisica b" — nunca "fisica 1"
+        # Esta regra garante que não suprimimos formatos inesperados.
+        assert parece_chave_disciplina_frente("fisica 1") is False

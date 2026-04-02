@@ -241,16 +241,71 @@ Qualquer um dos itens abaixo estiver presente:
 
 ## 6. Registro de execução do checklist
 
-Preencher a cada execução:
+---
+
+### Execução 001 — Piloto Arte AV1 (homologação assistida — correção de bugs)
+
+| Campo | Valor |
+|-------|-------|
+| Data | 2026-04-01 |
+| Ambiente | produção (iScholar real) |
+| Lote ID (dry-run) | homolog-piloto-003-dryrun |
+| Lote ID (real) | homolog-piloto-003-real |
+| Planilha | nova_planilha.xlsx |
+| Disciplina testada | Arte — Frente Única (AV 1 Obj + AV 1 Disc) |
+| Alunos | 3 (ALICE BARCELOS LINS / RA 1222, ALICE DE MEDEIROS GARCIA / RA 1239, ALICE DE SÁ FREITAS SOARES / RA 1437 — Turma 1A, T2) |
+| Operador / aprovador | pedro |
+| Resultado dry-run | ✅ sucesso — 3/3 processados, 0 erros de resolução, 0 erros de envio |
+| Resultado POST real | ✅ sucesso — 3/3 enviados, status `sent`, exit code 0 |
+| Evidência no diário | ✅ notas apareceram corretamente no diário do iScholar (confirmado visualmente) |
+| Idempotência | ✅ reenvio com mesmo lote-id bloqueado com `LoteJaAprovadoError` antes de qualquer POST |
+| Exit code | 0 |
+| Bugs corrigidos nesta execução | **Bug 1:** `ischolar_client.py` declarava `sucesso=True` para HTTP 200 com `{"status":"erro"}` no corpo — corrigido: agora inspeciona o corpo e retorna `sucesso=False` + `erro_categoria="negocio"`. **Bug 2:** `mapa_professores.json` não tinha a chave `"arte"` (wide_format_adapter produz chave sem sufixo de professor para Frente Única) — corrigido: adicionados aliases `"arte": 96`, `"biologia": 61`, `"sociologia": 49`, `"filosofia": 49`. |
+| Warnings presentes | ⚠️ `PROFESSOR_NAO_ENCONTRADO_REGISTRO` para arte, biologia, fisica a, fisica b, fisica c — avisos de validação (estágio 1-5) contra registro oficial Madan 2026. Não bloquearam o envio. Professor foi resolvido corretamente na etapa 8 via `mapa_professores.json`. A investigar: de onde vem esse registro oficial e como atualizá-lo. |
+| Observações | Primeira execução real bem-sucedida após correção dos dois bugs críticos de homologação. |
+
+---
+
+### Execução 002 — Piloto Inglês AV1 (validação de segunda disciplina)
+
+| Campo | Valor |
+|-------|-------|
+| Data | 2026-04-01 |
+| Ambiente | produção (iScholar real) |
+| Lote ID (dry-run) | homolog-piloto-004-dryrun |
+| Lote ID (real) | homolog-piloto-004-real |
+| Planilha | planilha_homolog_disciplina_simples.xlsx |
+| Disciplina testada | Inglês — Frente Única (AV 1 Obj + AV 1 Disc) |
+| Alunos | 3 (ALICE BARCELOS LINS / RA 1222 → 10, ALICE DE MEDEIROS GARCIA / RA 1239 → 10, ALICE DE SÁ FREITAS SOARES / RA 1437 → 10 — Turma 1A, T2) |
+| Operador / aprovador | pedro |
+| Resultado dry-run | ✅ sucesso — 3/3 processados, 0 erros de resolução, 0 erros de envio |
+| Resultado POST real | ✅ sucesso — 3/3 enviados, status `sent`, exit code 0 |
+| Evidência no diário | ✅ nota 10 apareceu corretamente para as 3 alunas no diário do iScholar (confirmado por screenshot) |
+| Idempotência | não testada nesta execução (já validada na execução 001) |
+| Exit code | 0 |
+| Warnings presentes | ⚠️ mesmos `PROFESSOR_NAO_ENCONTRADO_REGISTRO` da execução 001 (arte, biologia, fisica a/b/c). Inglês não gerou aviso — professor `"ingles": 60` já estava no mapa e no registro oficial. |
+| Observações | Confirma que o fluxo funciona para disciplinas além de Arte. Inglês tem professor único sem dependência de série — escolha ideal para segundo piloto. Nota 10 no diário é soma de AV1 Obj (6+5+7) + AV1 Disc (4+5+3) conforme ponderação do iScholar. |
+
+---
+
+### Template para próximas execuções
 
 | Campo | Valor |
 |-------|-------|
 | Data | |
 | Ambiente | homologação / produção |
-| Lote ID | |
-| Operador | |
-| Resultado | sucesso / falha parcial / falha total |
+| Lote ID (dry-run) | |
+| Lote ID (real) | |
+| Planilha | |
+| Disciplina testada | |
+| Alunos | |
+| Operador / aprovador | |
+| Resultado dry-run | |
+| Resultado POST real | |
+| Evidência no diário | |
+| Idempotência | |
 | Exit code | |
+| Warnings presentes | |
 | Observações | |
 
 ### Execução 1 — Dry-run (2026-03-28)

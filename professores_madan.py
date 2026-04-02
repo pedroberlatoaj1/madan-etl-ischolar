@@ -398,20 +398,31 @@ def _normalizar_para_busca(s: str) -> str:
 _INDICE_APELIDO: dict[str, ProfessorMadan] = {}
 # Índice por nome normalizado
 _INDICE_NOME: dict[str, ProfessorMadan] = {}
+# Índice por primeiro nome normalizado quando único no registro
+_INDICE_PRIMEIRO_NOME_UNICO: dict[str, ProfessorMadan] = {}
 # Índice por disciplina canônica → lista de professores
 _INDICE_DISCIPLINA: dict[str, list[ProfessorMadan]] = {}
 
 
 def _construir_indices() -> None:
     """Constrói os índices de busca na primeira importação."""
+    primeiros_nomes: dict[str, list[ProfessorMadan]] = {}
+
     for prof in PROFESSORES:
         if prof.apelido:
             _INDICE_APELIDO[_normalizar_para_busca(prof.apelido)] = prof
         _INDICE_NOME[_normalizar_para_busca(prof.nome)] = prof
+        primeiro_nome = _normalizar_para_busca(prof.nome.split()[0]) if prof.nome.split() else ""
+        if primeiro_nome:
+            primeiros_nomes.setdefault(primeiro_nome, []).append(prof)
 
         disc = prof.disciplina_canonica
         if disc:
             _INDICE_DISCIPLINA.setdefault(disc, []).append(prof)
+
+    for primeiro_nome, professores in primeiros_nomes.items():
+        if len(professores) == 1:
+            _INDICE_PRIMEIRO_NOME_UNICO[primeiro_nome] = professores[0]
 
 
 _construir_indices()
@@ -420,6 +431,49 @@ _construir_indices()
 # ---------------------------------------------------------------------------
 # Funções de busca
 # ---------------------------------------------------------------------------
+
+def parece_chave_disciplina_frente(frente_professor: str) -> bool:
+    """
+    Retorna True se o valor parece ser uma chave de disciplina/frente gerada
+    automaticamente pelo pipeline (ex.: "arte", "fisica a", "biologia"), e não
+    um nome ou apelido de professor.
+
+    Essas chaves são produzidas por wide_format_adapter.construir_frente_professor()
+    para colunas sem sufixo de professor explícito (tipicamente Frente Única e
+    frentes múltiplas sem nome no cabeçalho).
+
+    Critério conservador — retorna True apenas quando:
+      1. Não contém " - " (sem separador de nome de professor explícito); E
+      2. A string normalizada bate exatamente com uma disciplina canônica conhecida,
+         OU começa com uma disciplina canônica seguida de espaço + identificador de
+         frente curto (1–5 letras, sem dígitos — ex.: "a", "b", "unica").
+
+    Exemplos que retornam True  : "arte", "biologia", "fisica a", "fisica b",
+                                  "matematica c", "ingles", "gramatica"
+    Exemplos que retornam False : "arte - lenice", "fisica - cavaco",
+                                  "cavaco", "perrone", "xyz"
+    """
+    s = str(frente_professor).strip()
+    # Presença de " - " indica nome de professor explícito → não é chave pura
+    if " - " in s:
+        return False
+
+    norm = _normalizar_para_busca(s)
+
+    # Correspondência exata com disciplina canônica conhecida
+    if norm in _INDICE_DISCIPLINA:
+        return True
+
+    # Disciplina canônica + espaço + identificador de frente (ex.: "fisica a")
+    for disc in _INDICE_DISCIPLINA:
+        if norm.startswith(disc + " "):
+            resto = norm[len(disc) + 1:].strip()
+            # Identificador de frente: 1–5 caracteres, somente letras
+            if 1 <= len(resto) <= 5 and resto.isalpha():
+                return True
+
+    return False
+
 
 def buscar_por_apelido(apelido: str) -> ProfessorMadan | None:
     """Busca professor por apelido (case-insensitive, sem acentos)."""
@@ -431,12 +485,25 @@ def buscar_por_nome(nome: str) -> ProfessorMadan | None:
     return _INDICE_NOME.get(_normalizar_para_busca(nome))
 
 
+def buscar_por_primeiro_nome_unico(nome: str) -> ProfessorMadan | None:
+    """
+    Busca por primeiro nome apenas quando ele é único no registro.
+
+    Mantém o lookup conservador: nomes ambíguos como "guilherme" ou "thiago"
+    não resolvem para nenhum professor.
+    """
+    return _INDICE_PRIMEIRO_NOME_UNICO.get(_normalizar_para_busca(nome))
+
+
 def buscar_por_nome_ou_apelido(valor: str) -> ProfessorMadan | None:
     """Busca professor por apelido primeiro, depois por nome."""
     resultado = buscar_por_apelido(valor)
     if resultado:
         return resultado
-    return buscar_por_nome(valor)
+    resultado = buscar_por_nome(valor)
+    if resultado:
+        return resultado
+    return buscar_por_primeiro_nome_unico(valor)
 
 
 def buscar_por_disciplina(disciplina: str) -> list[ProfessorMadan]:
@@ -662,6 +729,7 @@ __all__ = [
     "PROFESSORES",
     "SIGLA_PARA_DISCIPLINA",
     "sigla_para_disciplina",
+    "parece_chave_disciplina_frente",
     "buscar_por_apelido",
     "buscar_por_nome",
     "buscar_por_nome_ou_apelido",

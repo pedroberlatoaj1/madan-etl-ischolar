@@ -25,6 +25,40 @@ from transformador import linha_madan_para_lancamentos
 from validacao_pre_envio import validar_pre_envio_linha
 
 
+def _row_com_frente_professor(
+    frente_professor: str,
+    *,
+    disciplina: str,
+    turma: str,
+    estudante: str = "Aluno Regressao",
+) -> dict[str, str]:
+    return {
+        "Estudante": estudante,
+        "Trimestre": "1",
+        "Disciplina": disciplina,
+        "Frente - Professor": frente_professor,
+        "Turma": turma,
+        "AV 1 (OBJ)": "4",
+        "AV 1 (DISÇ)": "4",
+    }
+
+
+def _validar_com_frente_professor(
+    frente_professor: str,
+    *,
+    disciplina: str,
+    turma: str,
+    linha_origem: int = 200,
+) -> dict[str, object]:
+    row = _row_com_frente_professor(
+        frente_professor,
+        disciplina=disciplina,
+        turma=turma,
+    )
+    lancs = linha_madan_para_lancamentos(row, linha_origem=linha_origem)
+    return validar_pre_envio_linha(row_wide=row, lancamentos=lancs)
+
+
 # ---------------------------------------------------------------------------
 # Caso válido — comportamento esperado após o patch
 # ---------------------------------------------------------------------------
@@ -335,4 +369,90 @@ def test_identificador_pendente_nao_e_bloqueante():
     assert pend is not None, "Pendência IDENTIFICADOR_ISCHOLAR_PENDENTE não encontrada"
     assert pend["bloqueante"] is False, (
         "IDENTIFICADOR_ISCHOLAR_PENDENTE deve ter bloqueante=False"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Regressao: aliases de disciplina/frente nao devem gerar warning falso
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("frente_professor", "disciplina", "turma"),
+    [
+        ("arte", "Arte", "1A"),
+        ("biologia", "Biologia", "1A"),
+        ("fisica a", "Fisica", "1A"),
+        ("fisica b", "Fisica", "1B"),
+        ("fisica c", "Fisica", "1C"),
+    ],
+)
+def test_alias_disciplina_frente_nao_gera_professor_nao_encontrado(
+    frente_professor: str,
+    disciplina: str,
+    turma: str,
+):
+    res = _validar_com_frente_professor(
+        frente_professor,
+        disciplina=disciplina,
+        turma=turma,
+    )
+
+    assert not any(
+        aviso["code"] == "PROFESSOR_NAO_ENCONTRADO_REGISTRO"
+        for aviso in res["avisos"]
+    ), f"Alias '{frente_professor}' gerou warning falso: {res['avisos']}"
+
+
+# ---------------------------------------------------------------------------
+# Regressao: nomes explicitos e apelidos continuam no caminho normal
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("frente_professor", "disciplina", "turma"),
+    [
+        ("arte - lenice", "Arte", "1A"),
+        ("fisica - cavaco", "Fisica", "1A"),
+        ("cavaco", "Fisica", "1A"),
+    ],
+)
+def test_nome_explicito_ou_apelido_valido_nao_e_suprimido_nem_gera_warning_falso(
+    frente_professor: str,
+    disciplina: str,
+    turma: str,
+):
+    res = _validar_com_frente_professor(
+        frente_professor,
+        disciplina=disciplina,
+        turma=turma,
+    )
+
+    assert not any(
+        aviso["code"] == "PROFESSOR_NAO_ENCONTRADO_REGISTRO"
+        for aviso in res["avisos"]
+    ), f"Professor valido '{frente_professor}' deveria passar pelo lookup normal sem warning falso."
+    assert not any(
+        aviso["code"] == "PROFESSOR_DISCIPLINA_TURMA_INCOMPATIVEL"
+        for aviso in res["avisos"]
+    ), f"Professor valido '{frente_professor}' foi tratado como incompatível: {res['avisos']}"
+
+
+# ---------------------------------------------------------------------------
+# Regressao: nome explicito invalido continua gerando warning legitimo
+# ---------------------------------------------------------------------------
+
+def test_nome_explicito_invalido_continua_gerando_warning_legitimo():
+    res = _validar_com_frente_professor(
+        "fisica - professorinexistente",
+        disciplina="Fisica",
+        turma="1A",
+    )
+
+    avisos_nao_encontrado = [
+        aviso for aviso in res["avisos"]
+        if aviso["code"] == "PROFESSOR_NAO_ENCONTRADO_REGISTRO"
+    ]
+    assert avisos_nao_encontrado, "Nome explicito invalido deveria continuar gerando warning legitimo."
+    assert any(
+        "professorinexistente" in str(aviso.get("details", {}).get("nome_extraido", "")).lower()
+        for aviso in avisos_nao_encontrado
     )

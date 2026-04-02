@@ -49,6 +49,7 @@ from madan_planilha_mapper import (
 from professores_madan import (
     buscar_por_nome_ou_apelido,
     extrair_professor_da_frente,
+    parece_chave_disciplina_frente,
     validar_professor_disciplina_turma,
 )
 
@@ -353,6 +354,13 @@ def _validar_professor_disciplina_turma(row_normalizada: Mapping[str, Any]) -> l
     if is_blank(frente_raw):
         return issues  # sem frente_professor → nada a validar
 
+    # Chaves como "arte", "fisica a", "biologia" são aliases de disciplina/frente
+    # gerados automaticamente pelo wide_format_adapter para colunas sem nome de
+    # professor explícito.  Não representam nome de pessoa — não há o que validar
+    # no registro oficial.  Warning aqui seria falso positivo.
+    if parece_chave_disciplina_frente(str(frente_raw)):
+        return issues
+
     # Tenta extrair o nome do professor do campo
     nome_prof = extrair_professor_da_frente(str(frente_raw))
     if not nome_prof:
@@ -577,6 +585,7 @@ def validar_pre_envio_linha(
     return {
         "lancamentos_validos":  lancamentos_validos,
         "lancamentos_com_erro": lancamentos_com_erro,
+        "erros":                [e.__dict__ for e in erros],
         "avisos":               [a.__dict__ for a in avisos],
         "pendencias":           [p.__dict__ for p in pendencias],
         "duplicidades":         duplicidades,
@@ -599,23 +608,23 @@ def criar_resultado_falha_linha(
     Preserva auditabilidade no relatório do lote com o mesmo schema de
     ``validar_pre_envio_linha``.
     """
+    erro_validacao = {
+        "severity": "erro",
+        "code": "ERRO_INTERNO_PROCESSAMENTO",
+        "message": mensagem_erro,
+        "bloqueante": True,
+    }
     lancamento_falha: dict[str, Any] = {
         "estudante":       estudante,
         "componente":      componente,
         "linha_origem":    linha_origem,
-        "validacao_erros": [
-            {
-                "severity": "erro",
-                "code":     "ERRO_INTERNO_PROCESSAMENTO",
-                "message":  mensagem_erro,
-                "bloqueante": True,
-            }
-        ],
+        "validacao_erros": [erro_validacao],
         "sendavel": False,
     }
     return {
         "lancamentos_validos":  [],
         "lancamentos_com_erro": [lancamento_falha],
+        "erros":                [erro_validacao],
         "avisos":               [],
         "pendencias":           [],
         "duplicidades":         [],
