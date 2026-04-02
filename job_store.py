@@ -14,15 +14,16 @@ Responsável por:
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Iterable, List, Optional, Callable, TypeVar
+from typing import Any, Callable, Iterable, List, Optional, TypeVar
 
 from config import config
-from constants import JobStatus, ErrorType
+from constants import ErrorType, JobStatus, JobType
 from logger import configurar_logger
 from alertas import alertar_falha_definitiva
 
@@ -70,6 +71,8 @@ class Job:
     last_error: Optional[str] = None
     next_retry_at: Optional[str] = None  # ISO UTC (string). Se > agora, não é elegível.
     last_attempt_at: Optional[str] = None  # ISO UTC do início da tentativa atual
+    job_type: str = JobType.LEGACY_SYNC
+    payload: Optional[dict[str, Any]] = None
 
 
 def _agora_iso() -> str:
@@ -175,6 +178,8 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         last_error=row["last_error"] if "last_error" in row.keys() else None,
         next_retry_at=row["next_retry_at"] if "next_retry_at" in row.keys() else None,
         last_attempt_at=row["last_attempt_at"] if "last_attempt_at" in row.keys() else None,
+        job_type=row["job_type"] if "job_type" in row.keys() else JobType.LEGACY_SYNC,
+        payload=json.loads(row["payload_json"]) if ("payload_json" in row.keys() and row["payload_json"]) else None,
     )
 
 
@@ -250,6 +255,31 @@ def _migrate_add_result_summary(conn: sqlite3.Connection) -> None:
     log.info("✅ Migração result_summary concluída.")
 
 
+def _migrate_add_job_metadata(conn: sqlite3.Connection) -> None:
+    """Adiciona metadados do novo modelo de jobs (job_type e payload_json)."""
+    cur = conn.execute("PRAGMA table_info(jobs)")
+    colunas = {row["name"] for row in cur.fetchall()}
+
+    novas_colunas: list[tuple[str, str]] = []
+    if "job_type" not in colunas:
+        novas_colunas.append(("job_type", "TEXT NOT NULL DEFAULT 'legacy_sync'"))
+    if "payload_json" not in colunas:
+        novas_colunas.append(("payload_json", "TEXT"))
+
+    if not novas_colunas:
+        return
+
+    log.info(
+        "🔄 Migrando schema: adicionando metadados do modelo de jobs (%d)...",
+        len(novas_colunas),
+    )
+    conn.execute("BEGIN")
+    for nome, ddl in novas_colunas:
+        conn.execute(f"ALTER TABLE jobs ADD COLUMN {nome} {ddl}")
+    conn.execute("COMMIT")
+    log.info("✅ Migração de metadados do modelo de jobs concluída.")
+
+
 def init_db() -> None:
     """Inicializa o banco de dados e cria a tabela de jobs, se necessário."""
     global _INITIALIZED
@@ -270,6 +300,8 @@ def init_db() -> None:
                     source_type TEXT NOT NULL,
                     source_identifier TEXT NOT NULL,
                     content_hash TEXT NOT NULL,
+                    job_type TEXT NOT NULL DEFAULT 'legacy_sync',
+                    payload_json TEXT,
                     status TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
@@ -310,6 +342,13 @@ def init_db() -> None:
             _migrate_add_skip_reason(conn)
             _migrate_add_retry_metadata(conn)
             _migrate_add_result_summary(conn)
+            _migrate_add_job_metadata(conn)
+            conn.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_jobs_type_hash_source
+                    ON jobs (job_type, content_hash, source_type, source_identifier);
+                """
+            )
             _INITIALIZED = True
             log.info("🗄️ Banco de jobs inicializado com sucesso.")
         except sqlite3.Error as exc:
@@ -325,6 +364,9 @@ def criar_job(
     source_identifier: str,
     content_hash: str,
     total_records: Optional[int] = None,
+    *,
+    job_type: str = JobType.LEGACY_SYNC,
+    payload: Optional[dict[str, Any]] = None,
 ) -> Job:
     """
     Cria um novo job com status 'pending'.
@@ -341,6 +383,8 @@ def criar_job(
                 source_type,
                 source_identifier,
                 content_hash,
+                job_type,
+                payload_json,
                 status,
                 created_at,
                 updated_at,
@@ -348,12 +392,14 @@ def criar_job(
                 processed_records,
                 retry_count
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """,
             (
                 source_type,
                 source_identifier,
                 content_hash,
+                job_type,
+                (json.dumps(payload, sort_keys=True, ensure_ascii=False) if payload is not None else None),
                 JobStatus.PENDING,
                 agora,
                 agora,
@@ -374,10 +420,13 @@ def criar_job(
             total_records=total_records,
             processed_records=0 if total_records is not None else None,
             retry_count=0,
+            job_type=job_type,
+            payload=payload,
         )
         log.info(
-            "📌 Job criado | id=%s | source_type=%s | source_identifier=%s",
+            "📌 Job criado | id=%s | job_type=%s | source_type=%s | source_identifier=%s",
             job_id,
+            job_type,
             source_type,
             source_identifier,
         )
@@ -678,6 +727,7 @@ def marcar_sucesso(
 def _idempotency_ja_sucesso(
     conn: sqlite3.Connection,
     mode: str,
+    job_type: str,
     source_type: str,
     source_identifier: str,
     content_hash: str,
@@ -691,18 +741,23 @@ def _idempotency_ja_sucesso(
     mode = (mode or "content_and_source").strip().lower()
     if mode == "content_only":
         cur = conn.execute(
-            "SELECT 1 FROM jobs WHERE content_hash = ? AND status = 'success' LIMIT 1",
-            (content_hash,),
+            """
+            SELECT 1
+            FROM jobs
+            WHERE job_type = ? AND content_hash = ? AND status = 'success'
+            LIMIT 1
+            """,
+            (job_type, content_hash),
         )
     else:
         cur = conn.execute(
             """
             SELECT 1 FROM jobs
-            WHERE source_type = ? AND source_identifier = ? AND content_hash = ?
+            WHERE job_type = ? AND source_type = ? AND source_identifier = ? AND content_hash = ?
               AND status = 'success'
             LIMIT 1
             """,
-            (source_type, source_identifier, content_hash),
+            (job_type, source_type, source_identifier, content_hash),
         )
     return cur.fetchone() is not None
 
@@ -711,6 +766,8 @@ def hash_ja_processado_com_sucesso(
     source_type: str,
     source_identifier: str,
     content_hash: str,
+    *,
+    job_type: str = JobType.LEGACY_SYNC,
 ) -> bool:
     """
     Verifica se já existe job bem-sucedido conforme config.IDEMPOTENCY_MODE.
@@ -723,19 +780,21 @@ def hash_ja_processado_com_sucesso(
     conn = _conectar()
     try:
         achou = _idempotency_ja_sucesso(
-            conn, mode, source_type, source_identifier, content_hash
+            conn, mode, job_type, source_type, source_identifier, content_hash
         )
         if achou:
             log.info(
-                "♻️ Conteúdo já processado com sucesso (idempotência: %s) | source_type=%s | source_identifier=%s",
+                "♻️ Conteúdo já processado com sucesso (idempotência: %s) | job_type=%s | source_type=%s | source_identifier=%s",
                 mode,
+                job_type,
                 source_type,
                 source_identifier,
             )
         return achou
     except sqlite3.Error as exc:
         log.exception(
-            "❌ Erro ao verificar hash já processado (source_type=%s, source_identifier=%s): %s",
+            "❌ Erro ao verificar hash já processado (job_type=%s, source_type=%s, source_identifier=%s): %s",
+            job_type,
             source_type,
             source_identifier,
             exc,
@@ -750,6 +809,9 @@ def criar_job_com_idempotencia(
     source_identifier: str,
     content_hash: str,
     total_records: Optional[int] = None,
+    *,
+    job_type: str = JobType.LEGACY_SYNC,
+    payload: Optional[dict[str, Any]] = None,
 ) -> Job:
     """
     Cria um job com idempotência conforme config.IDEMPOTENCY_MODE.
@@ -767,7 +829,7 @@ def criar_job_com_idempotencia(
         conn.execute("BEGIN")
 
         ja_sucesso = _idempotency_ja_sucesso(
-            conn, mode, source_type, source_identifier, content_hash
+            conn, mode, job_type, source_type, source_identifier, content_hash
         )
 
         status_inicial = JobStatus.SKIPPED if ja_sucesso else JobStatus.PENDING
@@ -779,6 +841,8 @@ def criar_job_com_idempotencia(
                 source_type,
                 source_identifier,
                 content_hash,
+                job_type,
+                payload_json,
                 status,
                 created_at,
                 updated_at,
@@ -787,12 +851,14 @@ def criar_job_com_idempotencia(
                 processed_records,
                 retry_count
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
             """,
             (
                 source_type,
                 source_identifier,
                 content_hash,
+                job_type,
+                (json.dumps(payload, sort_keys=True, ensure_ascii=False) if payload is not None else None),
                 status_inicial,
                 agora,
                 agora,
@@ -820,20 +886,24 @@ def criar_job_com_idempotencia(
             total_records=total_records,
             processed_records=processed_records,
             retry_count=0,
+            job_type=job_type,
+            payload=payload,
         )
 
         if ja_sucesso:
             log.info(
-                "⏭️ Job %s criado como skipped (idempotência: %s) | source_type=%s | source_identifier=%s",
+                "⏭️ Job %s criado como skipped (idempotência: %s) | job_type=%s | source_type=%s | source_identifier=%s",
                 job_id,
                 mode,
+                job_type,
                 source_type,
                 source_identifier,
             )
         else:
             log.info(
-                "📌 Job %s criado como pending | source_type=%s | source_identifier=%s",
+                "📌 Job %s criado como pending | job_type=%s | source_type=%s | source_identifier=%s",
                 job_id,
+                job_type,
                 source_type,
                 source_identifier,
             )
@@ -841,6 +911,57 @@ def criar_job_com_idempotencia(
         return job
 
     return _with_lock_retry(_op, op_name="criar_job_com_idempotencia")
+
+
+def criar_job_validacao_google_sheets(
+    *,
+    source_identifier: str,
+    content_hash: str,
+    lote_id: str,
+    total_records: Optional[int] = None,
+    payload: Optional[dict[str, Any]] = None,
+) -> Job:
+    payload_final = {"lote_id": lote_id}
+    if payload:
+        payload_final.update(payload)
+    return criar_job_com_idempotencia(
+        source_type="google_sheets",
+        source_identifier=source_identifier,
+        content_hash=content_hash,
+        total_records=total_records,
+        job_type=JobType.GOOGLE_SHEETS_VALIDATION,
+        payload=payload_final,
+    )
+
+
+def criar_job_aprovacao_envio(
+    *,
+    lote_id: str,
+    aprovado_por: str,
+    snapshot_hash: str,
+    approval_identity: Optional[dict[str, Any]] = None,
+    source_type: str = "google_sheets",
+    source_identifier: Optional[str] = None,
+    dry_run: bool = False,
+    payload: Optional[dict[str, Any]] = None,
+) -> Job:
+    payload_final = {
+        "lote_id": lote_id,
+        "aprovado_por": aprovado_por,
+        "expected_snapshot_hash": snapshot_hash,
+        "dry_run": dry_run,
+    }
+    if approval_identity:
+        payload_final["approval_identity"] = dict(approval_identity)
+    if payload:
+        payload_final.update(payload)
+    return criar_job(
+        source_type=source_type,
+        source_identifier=source_identifier or lote_id,
+        content_hash=snapshot_hash,
+        job_type=JobType.APPROVAL_AND_SEND,
+        payload=payload_final,
+    )
 
 
 def obter_job_por_id(job_id: int) -> Optional[Job]:
@@ -1217,9 +1338,10 @@ __all__ = [
     "obter_estatisticas_recentes",
     "hash_ja_processado_com_sucesso",
     "criar_job_com_idempotencia",
+    "criar_job_validacao_google_sheets",
+    "criar_job_aprovacao_envio",
     "obter_job_por_id",
     "listar_jobs_por_status",
     "claim_next_pending_job",
     "requeue_stale_processing_jobs",
 ]
-

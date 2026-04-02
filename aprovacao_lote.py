@@ -98,6 +98,10 @@ class EstadoAprovacaoLote:
     elegivel_para_aprovacao: bool
     resumo_atual: dict[str, Any]
     aprovado_por: Optional[str] = None
+    aprovador_nome_informado: Optional[str] = None
+    aprovador_email: Optional[str] = None
+    aprovador_origem: Optional[str] = None
+    aprovador_identity_strength: Optional[str] = None
     aprovado_em: Optional[str] = None
     rejeitado_por: Optional[str] = None
     rejeitado_em: Optional[str] = None
@@ -293,6 +297,10 @@ def aprovar_lote(
     estado: EstadoAprovacaoLote,
     *,
     aprovado_por: str,
+    aprovador_nome_informado: Optional[str] = None,
+    aprovador_email: Optional[str] = None,
+    aprovador_origem: Optional[str] = None,
+    aprovador_identity_strength: Optional[str] = None,
     store: "AprovacaoLoteStore | None" = None,
     itens_sendaveis: list[Mapping[str, Any]] | None = None,
     itens_store: "LoteItensStore | None" = None,
@@ -344,6 +352,26 @@ def aprovar_lote(
     snapshot = deepcopy(estado.resumo_atual)
     estado.status                   = "aprovado_para_envio"
     estado.aprovado_por             = str(aprovado_por).strip()
+    estado.aprovador_nome_informado = (
+        str(aprovador_nome_informado).strip()
+        if aprovador_nome_informado is not None and str(aprovador_nome_informado).strip()
+        else None
+    )
+    estado.aprovador_email          = (
+        str(aprovador_email).strip().lower()
+        if aprovador_email is not None and str(aprovador_email).strip()
+        else None
+    )
+    estado.aprovador_origem         = (
+        str(aprovador_origem).strip()
+        if aprovador_origem is not None and str(aprovador_origem).strip()
+        else None
+    )
+    estado.aprovador_identity_strength = (
+        str(aprovador_identity_strength).strip()
+        if aprovador_identity_strength is not None and str(aprovador_identity_strength).strip()
+        else None
+    )
     estado.aprovado_em              = _agora_iso()
     estado.snapshot_resumo_aprovado = snapshot
     estado.hash_resumo_aprovado     = _hash_resumo(snapshot)

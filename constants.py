@@ -17,5 +17,12 @@ class ErrorType:
     STALE_EXHAUSTED = "stale_exhausted"
 
 
-__all__ = ["JobStatus", "ErrorType"]
+class JobType:
+    """Tipos logicos de job aceitos pelo worker."""
 
+    LEGACY_SYNC = "legacy_sync"
+    GOOGLE_SHEETS_VALIDATION = "google_sheets_validation"
+    APPROVAL_AND_SEND = "approval_and_send"
+
+
+__all__ = ["JobStatus", "ErrorType", "JobType"]

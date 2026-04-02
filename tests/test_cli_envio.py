@@ -100,6 +100,15 @@ def _escrever_mapas(tmp_path: Path) -> tuple[str, str, str]:
     return str(disc), str(aval), str(prof)
 
 
+def _db_args(tmp_path: Path) -> list[str]:
+    return [
+        "--db-validacoes", str(tmp_path / "validacoes.db"),
+        "--db-aprovacoes", str(tmp_path / "aprovacoes.db"),
+        "--db-itens", str(tmp_path / "itens.db"),
+        "--db-audit", str(tmp_path / "audit.db"),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Teste 1: template sem coluna obrigatória → SystemExit(2)
 # ---------------------------------------------------------------------------
@@ -117,7 +126,7 @@ def test_template_sem_ra_aborta_com_exit_2(tmp_path, capsys):
         "--aprovador", "Tester",
         "--mapa-disciplinas", disc,
         "--mapa-avaliacoes", aval,
-    ]
+    ] + _db_args(tmp_path)
 
     with patch("sys.argv", ["cli_envio.py"] + args):
         with pytest.raises(SystemExit) as exc_info:
@@ -149,7 +158,7 @@ def test_template_sem_estudante_aborta_com_exit_2(tmp_path, capsys):
         "--aprovador", "Tester",
         "--mapa-disciplinas", disc,
         "--mapa-avaliacoes", aval,
-    ]
+    ] + _db_args(tmp_path)
 
     with patch("sys.argv", ["cli_envio.py"] + args):
         with pytest.raises(SystemExit) as exc_info:
@@ -185,7 +194,7 @@ def test_lote_nao_elegivel_nao_segue_para_envio(tmp_path, capsys):
         "--aprovador", "Tester",
         "--mapa-disciplinas", disc,
         "--mapa-avaliacoes", aval,
-    ]
+    ] + _db_args(tmp_path)
 
     with patch("sys.argv", ["cli_envio.py"] + args):
         with patch("cli_envio.IScholarClient", return_value=_FakeClient()):
@@ -283,7 +292,7 @@ def test_fluxo_feliz_dry_run(tmp_path, capsys):
         "--mapa-disciplinas", disc,
         "--mapa-avaliacoes", aval,
         "--mapa-professores", prof,
-    ]
+    ] + _db_args(tmp_path)
 
     with patch("sys.argv", ["cli_envio.py"] + args):
         with patch("cli_envio.IScholarClient", return_value=_FakeClient()):
@@ -315,7 +324,7 @@ def test_dry_run_imprime_resumo_do_envio(tmp_path, capsys):
         "--aprovador", "Tester",
         "--mapa-disciplinas", disc,
         "--mapa-avaliacoes", aval,
-    ]
+    ] + _db_args(tmp_path)
 
     with patch("sys.argv", ["cli_envio.py"] + args):
         with patch("cli_envio.IScholarClient", return_value=_FakeClient()):
@@ -349,7 +358,7 @@ def test_mapa_disciplinas_ausente_aborta_com_exit_5(tmp_path, capsys):
         "--aprovador", "Tester",
         "--mapa-disciplinas", str(tmp_path / "nao_existe.json"),
         "--mapa-avaliacoes", aval,
-    ]
+    ] + _db_args(tmp_path)
 
     with patch("sys.argv", ["cli_envio.py"] + args):
         with patch("cli_envio.IScholarClient", return_value=_FakeClient()):
@@ -411,7 +420,7 @@ def test_resiliencia_linha_falha_nao_aborta_lote(tmp_path, capsys):
         "--aprovador", "Tester",
         "--mapa-disciplinas", disc,
         "--mapa-avaliacoes", aval,
-    ]
+    ] + _db_args(tmp_path)
 
     _call_count = [0]
 
@@ -434,7 +443,7 @@ def test_resiliencia_linha_falha_nao_aborta_lote(tmp_path, capsys):
             # Patch APÓS reload: linha_madan_para_lancamentos não tem guarda
             # defensiva, então o reload a sobrescreveria se patchada antes.
             with patch(
-                "cli_envio.linha_madan_para_lancamentos",
+                "pipeline_runner.linha_madan_para_lancamentos",
                 side_effect=_transformador_falha_primeira_linha,
             ):
                 with pytest.raises(SystemExit) as exc_info:
@@ -456,12 +465,12 @@ def test_resiliencia_linha_falha_nao_aborta_lote(tmp_path, capsys):
 
 
 # ---------------------------------------------------------------------------
-# Teste 6: flags --db-aprovacoes / --db-itens / --db-audit são aceitas e usadas
+# Teste 6: flags --db-validacoes / --db-aprovacoes / --db-itens / --db-audit são aceitas e usadas
 # ---------------------------------------------------------------------------
 
 def test_flags_db_sao_aceitas_e_usadas(tmp_path, capsys):
     """
-    --db-aprovacoes, --db-itens e --db-audit devem ser aceitas pelo parser
+    --db-validacoes, --db-aprovacoes, --db-itens e --db-audit devem ser aceitas pelo parser
     e passadas aos respectivos stores.
 
     Verificação: o fluxo feliz completa com exit 0 quando caminhos explícitos
@@ -474,6 +483,7 @@ def test_flags_db_sao_aceitas_e_usadas(tmp_path, capsys):
     db_aprovacoes = str(tmp_path / "aprovacoes_custom.db")
     db_itens      = str(tmp_path / "itens_custom.db")
     db_audit      = str(tmp_path / "audit_custom.db")
+    db_validacoes = str(tmp_path / "validacoes_custom.db")
 
     args = [
         "--planilha", str(planilha),
@@ -483,6 +493,7 @@ def test_flags_db_sao_aceitas_e_usadas(tmp_path, capsys):
         "--mapa-disciplinas", disc,
         "--mapa-avaliacoes", aval,
         "--mapa-professores", prof,
+        "--db-validacoes", db_validacoes,
         "--db-aprovacoes", db_aprovacoes,
         "--db-itens",      db_itens,
         "--db-audit",      db_audit,
@@ -504,6 +515,7 @@ def test_flags_db_sao_aceitas_e_usadas(tmp_path, capsys):
 
     # Os arquivos de banco devem ter sido criados nos caminhos fornecidos
     from pathlib import Path
+    assert Path(db_validacoes).exists(), "--db-validacoes: arquivo não criado"
     assert Path(db_aprovacoes).exists(), "--db-aprovacoes: arquivo não criado"
     assert Path(db_itens).exists(),      "--db-itens: arquivo não criado"
     assert Path(db_audit).exists(),      "--db-audit: arquivo não criado"

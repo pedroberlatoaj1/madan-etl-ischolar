@@ -1,0 +1,4 @@
+# Ambiente de desenvolvimento/teste do projeto.
+# Inclui as dependencias da aplicacao e o que os testes do webhook precisam.
+
+-r requirements.txt

@@ -122,7 +122,7 @@ class LoteItensStore:
         Abre uma conexão física, configura PRAGMAs e row_factory.
         Sempre retorna uma conexão nova; nunca consulta _shared_conn.
         """
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path, timeout=5.0)
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.row_factory = sqlite3.Row

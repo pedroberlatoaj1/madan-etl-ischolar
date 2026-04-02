@@ -41,6 +41,10 @@ CREATE TABLE IF NOT EXISTS aprovacoes_lote (
     elegivel_para_aprovacao     INTEGER NOT NULL,   -- 0 | 1 (SQLite não tem BOOL)
     resumo_atual                TEXT    NOT NULL,   -- JSON
     aprovado_por                TEXT,
+    aprovador_nome_informado    TEXT,
+    aprovador_email             TEXT,
+    aprovador_origem            TEXT,
+    aprovador_identity_strength TEXT,
     aprovado_em                 TEXT,
     rejeitado_por               TEXT,
     rejeitado_em                TEXT,
@@ -56,14 +60,16 @@ _UPSERT = """
 INSERT INTO aprovacoes_lote (
     lote_id, status, elegivel_para_aprovacao,
     resumo_atual,
-    aprovado_por, aprovado_em,
+    aprovado_por, aprovador_nome_informado, aprovador_email,
+    aprovador_origem, aprovador_identity_strength, aprovado_em,
     rejeitado_por, rejeitado_em, motivo_rejeicao,
     snapshot_resumo_aprovado, hash_resumo_aprovado,
     criado_em, atualizado_em
 ) VALUES (
     :lote_id, :status, :elegivel,
     :resumo_atual_json,
-    :aprovado_por, :aprovado_em,
+    :aprovado_por, :aprovador_nome_informado, :aprovador_email,
+    :aprovador_origem, :aprovador_identity_strength, :aprovado_em,
     :rejeitado_por, :rejeitado_em, :motivo_rejeicao,
     :snapshot_json, :hash_resumo_aprovado,
     COALESCE(
@@ -77,6 +83,10 @@ ON CONFLICT(lote_id) DO UPDATE SET
     elegivel_para_aprovacao  = excluded.elegivel_para_aprovacao,
     resumo_atual             = excluded.resumo_atual,
     aprovado_por             = excluded.aprovado_por,
+    aprovador_nome_informado = excluded.aprovador_nome_informado,
+    aprovador_email          = excluded.aprovador_email,
+    aprovador_origem         = excluded.aprovador_origem,
+    aprovador_identity_strength = excluded.aprovador_identity_strength,
     aprovado_em              = excluded.aprovado_em,
     rejeitado_por            = excluded.rejeitado_por,
     rejeitado_em             = excluded.rejeitado_em,
@@ -90,7 +100,8 @@ _SELECT = """
 SELECT
     lote_id, status, elegivel_para_aprovacao,
     resumo_atual,
-    aprovado_por, aprovado_em,
+    aprovado_por, aprovador_nome_informado, aprovador_email,
+    aprovador_origem, aprovador_identity_strength, aprovado_em,
     rejeitado_por, rejeitado_em, motivo_rejeicao,
     snapshot_resumo_aprovado, hash_resumo_aprovado
 FROM aprovacoes_lote
@@ -107,6 +118,20 @@ def _db_path_from_env() -> str:
 def _json_dumps(obj: object) -> str:
     """Serialização determinística (sort_keys garante hash estável)."""
     return json.dumps(obj, sort_keys=True, ensure_ascii=False, default=str)
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    cur = conn.execute("PRAGMA table_info(aprovacoes_lote)")
+    colunas = {row["name"] for row in cur.fetchall()}
+    novas_colunas = {
+        "aprovador_nome_informado": "TEXT",
+        "aprovador_email": "TEXT",
+        "aprovador_origem": "TEXT",
+        "aprovador_identity_strength": "TEXT",
+    }
+    for nome, ddl in novas_colunas.items():
+        if nome not in colunas:
+            conn.execute(f"ALTER TABLE aprovacoes_lote ADD COLUMN {nome} {ddl}")
 
 
 class AprovacaoLoteStore:
@@ -148,7 +173,7 @@ class AprovacaoLoteStore:
         Abre uma conexão física, configura PRAGMAs e row_factory.
         Sempre retorna uma conexão nova; nunca consulta _shared_conn.
         """
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path, timeout=5.0)
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA foreign_keys=ON;")
         conn.row_factory = sqlite3.Row
@@ -179,9 +204,11 @@ class AprovacaoLoteStore:
         """
         if conn is not None:
             conn.executescript(_DDL)
+            _ensure_columns(conn)
         else:
             with self._open_connection() as tmp:
                 tmp.executescript(_DDL)
+                _ensure_columns(tmp)
 
     # ------------------------------------------------------------------
     # API pública
@@ -199,6 +226,10 @@ class AprovacaoLoteStore:
             "elegivel":             int(estado.elegivel_para_aprovacao),
             "resumo_atual_json":    _json_dumps(estado.resumo_atual),
             "aprovado_por":         estado.aprovado_por,
+            "aprovador_nome_informado": getattr(estado, "aprovador_nome_informado", None),
+            "aprovador_email":      getattr(estado, "aprovador_email", None),
+            "aprovador_origem":     getattr(estado, "aprovador_origem", None),
+            "aprovador_identity_strength": getattr(estado, "aprovador_identity_strength", None),
             "aprovado_em":          estado.aprovado_em,
             "rejeitado_por":        estado.rejeitado_por,
             "rejeitado_em":         estado.rejeitado_em,
@@ -233,6 +264,10 @@ class AprovacaoLoteStore:
             elegivel_para_aprovacao=bool(row["elegivel_para_aprovacao"]),
             resumo_atual=resumo_atual,
             aprovado_por=row["aprovado_por"],
+            aprovador_nome_informado=row["aprovador_nome_informado"],
+            aprovador_email=row["aprovador_email"],
+            aprovador_origem=row["aprovador_origem"],
+            aprovador_identity_strength=row["aprovador_identity_strength"],
             aprovado_em=row["aprovado_em"],
             rejeitado_por=row["rejeitado_por"],
             rejeitado_em=row["rejeitado_em"],

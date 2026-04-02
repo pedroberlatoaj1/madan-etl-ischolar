@@ -306,7 +306,9 @@ Estudante | RA | Turma | Trimestre
 
 ## 6. CLI Oficial (`cli_envio.py`)
 
-O `cli_envio.py` é o orquestrador oficial do pipeline.
+O `cli_envio.py` continua sendo a rota oficial de contingencia no terminal, mas a
+orquestracao do pipeline agora vive no runner reutilizavel usado tambem pelo
+backend HTTP e pelo worker.
 
 ### 6.1 Fluxo interno
 
@@ -647,3 +649,44 @@ cp .env.example .env
 - O valor enviado ao iScholar deve ser a **nota bruta**;
 - `sendavel=True` significa item final pronto para virar POST oficial;
 - Tudo que orbita conceitos como `consultar_notas`, `criar_nota`, `sync_notas_idempotente`, `identificacao`, `tipo`, `data_lancamento` deve ser tratado como legado.
+
+---
+
+## 16. Operacao via Google Sheets
+
+O projeto agora suporta operacao assíncrona via Google Sheets, sem depender de terminal para o fluxo normal do operador.
+
+Fluxo resumido:
+
+1. O Apps Script lê a aba `Notas` e chama `POST /webhook/notas`.
+2. O backend cria um job `google_sheets_validation`.
+3. O worker executa o pipeline oficial e persiste o resultado da validação.
+4. O operador revisa o resumo e aprova no Google Sheets.
+5. O Apps Script chama `POST /lote/{lote_id}/aprovar`.
+6. O backend cria um job `approval_and_send`.
+7. O worker executa aprovação/envio e persiste o resultado consolidado final.
+8. O Apps Script consulta `GET /lote/{lote_id}/validacao` e `GET /lote/{lote_id}/resultado-envio` durante o polling.
+
+O Google Sheets permanece cliente fino:
+- coleta dados;
+- chama endpoints;
+- faz polling;
+- mostra dialogs;
+- guarda `lote_id`, `snapshot_hash` e os `job_id` mais recentes localmente.
+
+O backend continua dono do processo:
+- valida payload, autenticacao, anti-replay, limites e stale check;
+- cria jobs assincronos;
+- persiste validacao e resultado consolidado do envio;
+- expoe o estado consultavel para polling do operador.
+
+Consulte o guia operacional em `operacao_google_sheets.md`.
+
+## 17. Contingencia
+
+O CLI continua suportado como rota de contingência operacional e usa o mesmo runner oficial do backend:
+
+```bash
+.\.venv\Scripts\python.exe cli_envio.py --planilha notas.xlsx --lote-id lote-manual --dry-run
+.\.venv\Scripts\python.exe cli_envio.py --planilha notas.xlsx --lote-id lote-manual --aprovador "Coordenacao"
+```

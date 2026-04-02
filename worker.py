@@ -63,7 +63,24 @@ from job_store import (
 )
 from alertas import alertar_falha_definitiva
 from logger import configurar_logger
-from constants import ErrorType
+from constants import ErrorType, JobType
+from pipeline_runner import (
+    LoteNaoElegivelError,
+    MapaInvalidoError,
+    PreflightTecnicoError,
+    STATUS_SEND_RETRY_SCHEDULED,
+    STATUS_VALIDATION_FAILED,
+    STATUS_SEND_FAILED,
+    SnapshotStaleError,
+    atualizar_status_lote_envio,
+    executar_aprovacao_e_envio,
+    executar_validacao,
+)
+from aprovacao_lote_store import AprovacaoLoteStore
+from envio_lote_audit_store import EnvioLoteAuditStore
+from lote_itens_store import LoteItensStore
+from resultado_envio_lote_store import ResultadoEnvioLoteStore
+from validacao_lote_store import ResultadoValidacaoPersistido, ValidacaoLoteStore
 from snapshot_store import cleanup_old_snapshots, load_snapshot_records
 from transformador import limpar_e_transformar_notas
 
@@ -83,6 +100,15 @@ def _solicitar_encerramento(signum: int, frame: Optional[FrameType]) -> None:
 # Tipos de origem suportados
 SOURCE_LOCAL_FILE = "local_file"
 SOURCE_GOOGLE_SHEETS = "google_sheets"
+
+VALIDACAO_DB_DEFAULT = os.getenv("VALIDACAO_LOTE_DB", "validacoes_lote.db")
+APROVACOES_DB_DEFAULT = os.getenv("APROVACAO_LOTE_DB", "aprovacoes_lote.db")
+ITENS_DB_DEFAULT = os.getenv("LOTE_ITENS_DB", "lote_itens.db")
+AUDIT_DB_DEFAULT = os.getenv("ENVIO_LOTE_AUDIT_DB", "envio_lote_audit.db")
+RESULTADO_ENVIO_DB_DEFAULT = os.getenv("RESULTADO_ENVIO_LOTE_DB", "resultados_envio_lote.db")
+MAPA_DISC_DEFAULT = "mapa_disciplinas.json"
+MAPA_AVAL_DEFAULT = "mapa_avaliacoes.json"
+MAPA_PROF_DEFAULT = "mapa_professores.json"
 
 
 def _carregar_origem_local_file(source_identifier: str) -> pd.DataFrame:
@@ -310,7 +336,281 @@ def _falhar_job_com_retry(
     agendar_retry(job_id, next_retry_at=next_retry_at, last_error=mensagem, error_type=ErrorType.TRANSIENT)
 
 
-def processar_job(
+def _stores_pipeline_oficial(
+    job: Job,
+) -> tuple[
+    ValidacaoLoteStore,
+    AprovacaoLoteStore,
+    LoteItensStore,
+    EnvioLoteAuditStore,
+    ResultadoEnvioLoteStore,
+]:
+    payload = getattr(job, "payload", {}) or {}
+    return (
+        ValidacaoLoteStore(payload.get("db_validacoes") or VALIDACAO_DB_DEFAULT),
+        AprovacaoLoteStore(payload.get("db_aprovacoes") or APROVACOES_DB_DEFAULT),
+        LoteItensStore(payload.get("db_itens") or ITENS_DB_DEFAULT),
+        EnvioLoteAuditStore(payload.get("db_audit") or AUDIT_DB_DEFAULT),
+        ResultadoEnvioLoteStore(payload.get("db_resultados_envio") or RESULTADO_ENVIO_DB_DEFAULT),
+    )
+
+
+def _registrar_falha_aprovacao_envio_oficial(
+    *,
+    lote_id: str,
+    job_id: int,
+    snapshot_hash: str,
+    aprovado_por: str,
+    approval_identity: Optional[dict[str, Any]],
+    validation_store: ValidacaoLoteStore,
+    result_store: ResultadoEnvioLoteStore,
+    mensagem: str,
+    tipo_erro: str,
+) -> None:
+    atualizar_status_lote_envio(
+        lote_id=lote_id,
+        status=STATUS_SEND_RETRY_SCHEDULED if tipo_erro == ErrorType.TRANSIENT else STATUS_SEND_FAILED,
+        validation_store=validation_store,
+        result_store=result_store,
+        job_id=job_id,
+        snapshot_hash=snapshot_hash,
+        aprovado_por=aprovado_por,
+        approval_identity=approval_identity,
+        sucesso=False,
+        mensagem=mensagem,
+        finished_at=_agora_iso_utc() if tipo_erro != ErrorType.TRANSIENT else None,
+    )
+
+
+def _registrar_falha_validacao_oficial(
+    *,
+    lote_id: str,
+    job_id: int,
+    snapshot_hash: str,
+    validation_store: ValidacaoLoteStore,
+    mensagem: str,
+) -> None:
+    atual = validation_store.carregar(lote_id)
+    if atual is None:
+        atual = ResultadoValidacaoPersistido(
+            lote_id=lote_id,
+            job_id=job_id,
+            snapshot_hash=snapshot_hash,
+            status=STATUS_VALIDATION_FAILED,
+            resumo={},
+            avisos=[],
+            erros=[{"mensagem": mensagem}],
+            pendencias=[],
+            apto_para_aprovacao=False,
+            resultados_validacao=[],
+            itens_sendaveis=[],
+        )
+    else:
+        atual.job_id = job_id
+        atual.snapshot_hash = snapshot_hash
+        atual.status = STATUS_VALIDATION_FAILED
+        atual.resumo = {}
+        atual.avisos = []
+        atual.erros = [{"mensagem": mensagem}]
+        atual.pendencias = []
+        atual.apto_para_aprovacao = False
+        atual.resultados_validacao = []
+        atual.itens_sendaveis = []
+    validation_store.salvar(atual)
+
+
+def _carregar_entrada_oficial(job: Job) -> pd.DataFrame | str:
+    if job.source_type == SOURCE_GOOGLE_SHEETS:
+        if job.id is None:
+            raise ValueError("Job Google Sheets sem id")
+        return load_snapshot_records(job.id)
+    if job.source_type == SOURCE_LOCAL_FILE:
+        return job.source_identifier
+    raise ValueError(f"source_type nao suportado para pipeline oficial: {job.source_type}")
+
+
+def _processar_job_validacao_oficial(job: Job) -> JobResultado:
+    job_id = job.id
+    if job_id is None:
+        log.error("Job sem id, ignorando.")
+        return "error"
+
+    payload = getattr(job, "payload", {}) or {}
+    lote_id = str(payload.get("lote_id") or job.source_identifier)
+    validation_store, _, _, _, _ = _stores_pipeline_oficial(job)
+
+    try:
+        entrada = _carregar_entrada_oficial(job)
+        resultado = executar_validacao(
+            lote_id=lote_id,
+            entrada=entrada,
+            validation_store=validation_store,
+            job_id=job_id,
+            snapshot_hash=job.content_hash,
+        )
+    except FileNotFoundError as exc:
+        _registrar_falha_validacao_oficial(
+            lote_id=lote_id,
+            job_id=job_id,
+            snapshot_hash=job.content_hash,
+            validation_store=validation_store,
+            mensagem=f"Arquivo nao encontrado: {exc}",
+        )
+        _falhar_job_com_retry(job=job, mensagem=f"Arquivo nao encontrado: {exc}", tipo=ErrorType.PERMANENT)
+        return "error"
+    except (ValueError, KeyError) as exc:
+        _registrar_falha_validacao_oficial(
+            lote_id=lote_id,
+            job_id=job_id,
+            snapshot_hash=job.content_hash,
+            validation_store=validation_store,
+            mensagem=f"Dados invalidos: {exc}",
+        )
+        _falhar_job_com_retry(job=job, mensagem=f"Dados invalidos: {exc}", tipo=ErrorType.PERMANENT)
+        return "error"
+    except Exception as exc:
+        log.exception("Erro inesperado no job de validacao oficial %s: %s", job_id, exc)
+        tipo = classify_error(exc, context={"fase": "validacao_oficial"})
+        _registrar_falha_validacao_oficial(
+            lote_id=lote_id,
+            job_id=job_id,
+            snapshot_hash=job.content_hash,
+            validation_store=validation_store,
+            mensagem=f"Erro no pipeline oficial de validacao: {exc!s}",
+        )
+        _falhar_job_com_retry(
+            job=job,
+            mensagem=f"Erro no pipeline oficial de validacao: {exc!s}",
+            tipo=tipo,
+            context={"fase": "validacao_oficial"},
+        )
+        return "error"
+
+    resumo = resultado["resumo"]
+    total_linhas = int(resumo.get("total_linhas", 0))
+    result_summary = (
+        f"status={resultado['status']} | apto={resultado['apto_para_aprovacao']} | "
+        f"linhas={total_linhas} | sendaveis={resumo.get('total_sendaveis', 0)} | "
+        f"avisos={resumo.get('total_avisos', 0)} | erros={resumo.get('total_erros', 0)}"
+    )
+    marcar_sucesso(
+        job_id,
+        processed_records=total_linhas,
+        total_records=total_linhas,
+        result_summary=result_summary,
+    )
+    return "success_empty" if total_linhas == 0 else "success"
+
+
+def _processar_job_aprovacao_envio_oficial(
+    job: Job,
+    client: Optional[IScholarClient] = None,
+) -> JobResultado:
+    job_id = job.id
+    if job_id is None:
+        log.error("Job sem id, ignorando.")
+        return "error"
+
+    payload = getattr(job, "payload", {}) or {}
+    lote_id = str(payload.get("lote_id") or job.source_identifier)
+    aprovado_por = str(payload.get("aprovado_por") or "").strip()
+    approval_identity = payload.get("approval_identity")
+    dry_run = bool(payload.get("dry_run", False))
+    expected_snapshot_hash = payload.get("expected_snapshot_hash") or job.content_hash
+
+    validation_store, approval_store, itens_store, audit_store, result_store = _stores_pipeline_oficial(job)
+
+    try:
+        resultado = executar_aprovacao_e_envio(
+            lote_id=lote_id,
+            aprovado_por=aprovado_por,
+            approval_identity=approval_identity,
+            validation_store=validation_store,
+            approval_store=approval_store,
+            itens_store=itens_store,
+            result_store=result_store,
+            audit_store=audit_store,
+            dry_run=dry_run,
+            expected_snapshot_hash=expected_snapshot_hash,
+            job_id=job_id,
+            cliente=client,
+            mapa_disciplinas=str(payload.get("mapa_disciplinas") or MAPA_DISC_DEFAULT),
+            mapa_avaliacoes=str(payload.get("mapa_avaliacoes") or MAPA_AVAL_DEFAULT),
+            mapa_professores=payload.get("mapa_professores") or (MAPA_PROF_DEFAULT if os.path.exists(MAPA_PROF_DEFAULT) else None),
+            professor_obrigatorio=bool(payload.get("professor_obrigatorio", False)),
+        )
+    except (LoteNaoElegivelError, SnapshotStaleError, KeyError, ValueError) as exc:
+        _registrar_falha_aprovacao_envio_oficial(
+            lote_id=lote_id,
+            job_id=job_id,
+            snapshot_hash=str(expected_snapshot_hash),
+            aprovado_por=aprovado_por,
+            approval_identity=approval_identity,
+            validation_store=validation_store,
+            result_store=result_store,
+            mensagem=str(exc),
+            tipo_erro=ErrorType.PERMANENT,
+        )
+        _falhar_job_com_retry(job=job, mensagem=str(exc), tipo=ErrorType.PERMANENT)
+        return "error"
+    except (PreflightTecnicoError, MapaInvalidoError) as exc:
+        _registrar_falha_aprovacao_envio_oficial(
+            lote_id=lote_id,
+            job_id=job_id,
+            snapshot_hash=str(expected_snapshot_hash),
+            aprovado_por=aprovado_por,
+            approval_identity=approval_identity,
+            validation_store=validation_store,
+            result_store=result_store,
+            mensagem=str(exc),
+            tipo_erro=ErrorType.PERMANENT,
+        )
+        _falhar_job_com_retry(job=job, mensagem=str(exc), tipo=ErrorType.PERMANENT)
+        return "error"
+    except Exception as exc:
+        log.exception("Erro inesperado no job de aprovacao/envio oficial %s: %s", job_id, exc)
+        tipo = classify_error(exc, context={"fase": "aprovacao_envio_oficial"})
+        _registrar_falha_aprovacao_envio_oficial(
+            lote_id=lote_id,
+            job_id=job_id,
+            snapshot_hash=str(expected_snapshot_hash),
+            aprovado_por=aprovado_por,
+            approval_identity=approval_identity,
+            validation_store=validation_store,
+            result_store=result_store,
+            mensagem=f"Erro no pipeline oficial de aprovacao/envio: {exc!s}",
+            tipo_erro=tipo,
+        )
+        _falhar_job_com_retry(
+            job=job,
+            mensagem=f"Erro no pipeline oficial de aprovacao/envio: {exc!s}",
+            tipo=tipo,
+            context={"fase": "aprovacao_envio_oficial"},
+        )
+        return "error"
+
+    envio = resultado["envio"]
+    total_sendaveis = int(envio.get("total_sendaveis", 0))
+
+    if envio.get("sucesso"):
+        marcar_sucesso(
+            job_id,
+            processed_records=total_sendaveis,
+            total_records=total_sendaveis,
+            result_summary=str(envio.get("mensagem") or resultado.get("status")),
+        )
+        return "success_empty" if total_sendaveis == 0 else "success"
+
+    _falhar_job_com_retry(
+        job=job,
+        mensagem=str(envio.get("mensagem") or "Falha nao transitoria no envio oficial."),
+        tipo=ErrorType.PERMANENT,
+        context={"fase": "aprovacao_envio_oficial"},
+    )
+    return "error"
+
+
+def _processar_job_legacy(
     job: Job,
     client: Optional[IScholarClient] = None,
 ) -> JobResultado:
@@ -454,6 +754,18 @@ def processar_job(
         context={"fase": "envio", "status_code": resultado.status_code},
     )
     return "error"
+
+
+def processar_job(
+    job: Job,
+    client: Optional[IScholarClient] = None,
+) -> JobResultado:
+    job_type = getattr(job, "job_type", JobType.LEGACY_SYNC) or JobType.LEGACY_SYNC
+    if job_type == JobType.GOOGLE_SHEETS_VALIDATION:
+        return _processar_job_validacao_oficial(job)
+    if job_type == JobType.APPROVAL_AND_SEND:
+        return _processar_job_aprovacao_envio_oficial(job, client=client)
+    return _processar_job_legacy(job, client=client)
 
 
 @dataclass
