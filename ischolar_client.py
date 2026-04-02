@@ -896,6 +896,27 @@ class IScholarClient:
                     dados = resp.json()
                 except Exception:
                     dados = resp.text
+                # Alguns endpoints do iScholar retornam HTTP 200/201 com corpo
+                # {"status": "erro", "mensagem": "..."} para erros de negócio.
+                # Nesses casos o lançamento NÃO foi gravado — não é sucesso.
+                if isinstance(dados, dict) and dados.get("status") == "erro":
+                    mensagem_negocio = dados.get(
+                        "mensagem", "API retornou status de erro sem mensagem."
+                    )
+                    return ResultadoLancamentoNota(
+                        sucesso=False,
+                        transitorio=False,
+                        status_code=resp.status_code,
+                        erro_categoria="negocio",
+                        mensagem=mensagem_negocio,
+                        dados=dados,
+                        idempotente=True,
+                        dry_run=False,
+                        endpoint_alvo=endpoint,
+                        headers=headers,
+                        payload=payload,
+                        rastreabilidade=rast,
+                    )
                 return ResultadoLancamentoNota(
                     sucesso=True,
                     transitorio=False,

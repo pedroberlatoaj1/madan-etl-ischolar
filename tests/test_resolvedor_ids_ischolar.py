@@ -589,6 +589,60 @@ def test_professor_mapa_injetado_com_chave_bruta_resolve():
 
 
 # ---------------------------------------------------------------------------
+# Aliases de Frente Única no mapa_professores
+# ---------------------------------------------------------------------------
+
+def test_frente_unica_arte_resolve_via_alias_simples():
+    """
+    wide_format_adapter produz 'arte' (sem sufixo de professor) para colunas
+    com frente 'Frente Única'.  O mapa_professores.json deve ter a chave 'arte'
+    apontando para o id correto.  Regressão do bug detectado em 2026-04-01.
+    """
+    r, _ = _resolvedor(
+        mapa_prof={"arte": 96},
+        professor_obrigatorio=True,
+    )
+    resultado = r.resolver_ids(_lancamento(frente_professor="arte"))
+
+    assert resultado.id_professor == 96
+    assert resultado.resolvido
+    assert resultado.rastreabilidade["fonte_resolucao"]["id_professor"] == \
+        "de_para_local:mapa_professores"
+
+
+def test_frente_unica_alias_chave_com_acento_normaliza():
+    """
+    Mapa injetado com chave acentuada 'Arte' deve normalizar para 'arte'
+    e resolver igualmente — consistência com carregar_mapa_professores.
+    """
+    r, _ = _resolvedor(
+        mapa_prof={"Arte": 96},
+        professor_obrigatorio=True,
+    )
+    resultado = r.resolver_ids(_lancamento(frente_professor="arte"))
+
+    assert resultado.id_professor == 96
+    assert resultado.resolvido
+
+
+def test_frente_unica_sem_alias_no_mapa_e_obrigatorio_bloqueia():
+    """
+    Se a disciplina Frente Única não tem alias no mapa e professor_obrigatorio=True,
+    deve gerar erro de resolução (comportamento anterior ao bug fix — garante que a
+    verificação de obrigatoriedade continua funcionando para keys ausentes).
+    """
+    r, _ = _resolvedor(
+        mapa_prof={"matematica a": 71},   # mapa sem 'arte'
+        professor_obrigatorio=True,
+    )
+    resultado = r.resolver_ids(_lancamento(frente_professor="arte"))
+
+    assert not resultado.resolvido
+    assert resultado.id_professor is None
+    assert "professor_sem_mapeamento" in resultado.rastreabilidade["categorias_erro"]
+
+
+# ---------------------------------------------------------------------------
 # 10. Fluxo de envio novo usando resolvedor híbrido em dry_run
 # ---------------------------------------------------------------------------
 

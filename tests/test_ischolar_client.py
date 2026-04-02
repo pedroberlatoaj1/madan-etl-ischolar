@@ -552,6 +552,72 @@ class TestContratoOficialIScholar:
         assert res.transitorio is True
         assert res.erro_categoria == "rede"
 
+    def test_http200_com_status_erro_nao_e_sucesso(self, client, monkeypatch):
+        """
+        iScholar pode retornar HTTP 200 com corpo {"status": "erro", "mensagem": "..."}
+        para erros de negócio (ex.: id_professor obrigatório).
+        Nesse caso o lançamento NÃO foi gravado — deve reportar sucesso=False.
+        Regressão do bug detectado em 2026-04-01 durante homologação assistida.
+        """
+        corpo_erro_negocio = {
+            "status": "erro",
+            "mensagem": "O Curriculo da disciplina exige id_professor obrigatório.",
+        }
+
+        def fake_post(*args, **kwargs):
+            return FakeResponse(200, json_data=corpo_erro_negocio)
+
+        monkeypatch.setattr(client.session, "post", fake_post)
+
+        res = client.lancar_nota(
+            id_matricula=10,
+            id_disciplina=1,
+            id_avaliacao=2,
+            valor_bruta=8.5,
+            dry_run=False,
+        )
+        assert res.sucesso is False
+        assert res.transitorio is False
+        assert res.erro_categoria == "negocio"
+        assert res.status_code == 200
+        assert "id_professor" in res.mensagem
+
+    def test_http200_com_status_erro_preserva_mensagem_da_api(self, client, monkeypatch):
+        """Mensagem do campo 'mensagem' do corpo deve ser propagada intacta."""
+        mensagem_api = "Erro específico retornado pela API."
+
+        def fake_post(*args, **kwargs):
+            return FakeResponse(200, json_data={"status": "erro", "mensagem": mensagem_api})
+
+        monkeypatch.setattr(client.session, "post", fake_post)
+
+        res = client.lancar_nota(
+            id_matricula=10,
+            id_disciplina=1,
+            id_avaliacao=2,
+            valor_bruta=8.5,
+            dry_run=False,
+        )
+        assert res.sucesso is False
+        assert res.mensagem == mensagem_api
+
+    def test_http200_sem_status_erro_e_sucesso(self, client, monkeypatch):
+        """HTTP 200 com corpo normal (sem chave 'status': 'erro') continua sendo sucesso."""
+        def fake_post(*args, **kwargs):
+            return FakeResponse(200, json_data={"id": 42, "status": "ok"})
+
+        monkeypatch.setattr(client.session, "post", fake_post)
+
+        res = client.lancar_nota(
+            id_matricula=10,
+            id_disciplina=1,
+            id_avaliacao=2,
+            valor_bruta=8.5,
+            dry_run=False,
+        )
+        assert res.sucesso is True
+        assert res.erro_categoria is None
+
     def test_busca_aluno_mock(self, client, monkeypatch):
         def fake_get(url, params=None, headers=None, timeout=None):
             assert url.endswith("/aluno/busca")

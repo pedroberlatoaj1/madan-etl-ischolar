@@ -283,7 +283,14 @@ def _lookup_avaliacao(
     Retorna id_avaliacao int, ou None se não encontrado.
     """
     comp_norm = _normalizar_chave(componente)
-    tri_norm  = _normalizar_chave(trimestre) if trimestre else None
+    # Normaliza "T1"→"1", "T2"→"2", "T3"→"3" para compatibilidade com
+    # planilhas geradas pelo gerador_planilhas.py (usa "T1"/"T2"/"T3")
+    # e planilhas semi-wide do compilador_turma (usa "1"/"2"/"3").
+    tri_raw: Optional[str] = None
+    if trimestre:
+        t = _normalizar_chave(trimestre)   # ex: "t1", "t2", "t3", "1", "2"
+        tri_raw = t.lstrip("t") if t.startswith("t") and t[1:].isdigit() else t
+    tri_norm = tri_raw if tri_raw else None
 
     # Tentativa 1: componente + trimestre
     if tri_norm:
