@@ -39,14 +39,17 @@
     "soc": 11,
     "filosofia": 10,
     "fil": 10,
-    "gramatica": 172,
-    "gra": 172,
+    "gramatica": 29,
+    "gra": 29,
+    "lingua portuguesa": 29,
+    "por": 29,
     "interpretacao de texto": 96,
     "interpretacao textual": 96,
     "int tex": 96
   },
   "_avisos": [
-    "Disciplina 'portugues/lingua portuguesa' nao encontrada no iScholar — verificar nome real no sistema",
-    "Disciplina 'xadrez' nao encontrada no iScholar — verificar se existe ou foi removida"
+    "Disciplina 'xadrez' nao encontrada no iScholar — verificar se existe ou foi removida",
+    "Gramática e Língua Portuguesa são a mesma disciplina no iScholar (id=29, sigla POR). Madan usa 'gramatica', iScholar usa 'LÍNGUA PORTUGUESA'.",
+    "Verificar se 'interpretacao de texto' (id=96) e 'literatura' (id=91) ainda pertencem à grade das turmas — confirmar em próximo piloto."
   ]
 }

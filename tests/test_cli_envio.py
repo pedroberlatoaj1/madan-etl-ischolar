@@ -292,6 +292,7 @@ def test_fluxo_feliz_dry_run(tmp_path, capsys):
         "--mapa-disciplinas", disc,
         "--mapa-avaliacoes", aval,
         "--mapa-professores", prof,
+        "--no-professor-obrigatorio",  # teste sintético sem mapa de professor real
     ] + _db_args(tmp_path)
 
     with patch("sys.argv", ["cli_envio.py"] + args):
@@ -493,6 +494,7 @@ def test_flags_db_sao_aceitas_e_usadas(tmp_path, capsys):
         "--mapa-disciplinas", disc,
         "--mapa-avaliacoes", aval,
         "--mapa-professores", prof,
+        "--no-professor-obrigatorio",  # teste sintético sem mapa de professor real
         "--db-validacoes", db_validacoes,
         "--db-aprovacoes", db_aprovacoes,
         "--db-itens",      db_itens,

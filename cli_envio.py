@@ -232,9 +232,10 @@ def _parsear_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--professor-obrigatorio",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
         dest="professor_obrigatorio",
-        help="Bloqueia lancamentos sem id_professor.",
+        default=True,
+        help="Bloqueia lancamentos sem id_professor (default: ativado). Use --no-professor-obrigatorio para desativar.",
     )
     parser.add_argument("--db-validacoes", default=_VALIDACOES_DB_DEFAULT, help="Caminho do DB de validacoes.")
     parser.add_argument("--db-aprovacoes", default=_APROVACOES_DB_DEFAULT, help="Caminho do DB de aprovacoes.")

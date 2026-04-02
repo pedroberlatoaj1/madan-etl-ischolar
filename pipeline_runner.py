@@ -661,7 +661,7 @@ def preparar_dependencias_envio(
     mapa_disciplinas: str,
     mapa_avaliacoes: str,
     mapa_professores: Optional[str] = None,
-    professor_obrigatorio: bool = False,
+    professor_obrigatorio: bool = True,
     cliente: Any = None,
     client_factory: Optional[Callable[[], Any]] = None,
 ) -> dict[str, Any]:
@@ -767,7 +767,7 @@ def executar_aprovacao_e_envio(
     mapa_disciplinas: Optional[str] = None,
     mapa_avaliacoes: Optional[str] = None,
     mapa_professores: Optional[str] = None,
-    professor_obrigatorio: bool = False,
+    professor_obrigatorio: bool = True,
     client_factory: Optional[Callable[[], Any]] = None,
 ) -> dict[str, Any]:
     persistido = validation_store.carregar(lote_id)
