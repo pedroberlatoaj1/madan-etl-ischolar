@@ -364,7 +364,7 @@ python cli_envio.py \
 | `--mapa-disciplinas` | Não | Padrão: `mapa_disciplinas.json` |
 | `--mapa-avaliacoes` | Não | Padrão: `mapa_avaliacoes.json` |
 | `--mapa-professores` | Não | Padrão: `mapa_professores.json` |
-| `--professor-obrigatorio` | Não | Bloqueia lançamentos sem `id_professor` |
+| `--professor-obrigatorio` / `--no-professor-obrigatorio` | Não | Bloqueia lançamentos sem `id_professor` (default: ativado) |
 | `--db-aprovacoes` | Não | Padrão: `aprovacoes_lote.db` |
 | `--db-itens` | Não | Padrão: `lote_itens.db` |
 | `--db-audit` | Não | Padrão: `envio_lote_audit.db` |
@@ -493,10 +493,11 @@ POST `/notas/lanca_nota`:
 - URL da API: `https://api.ischolar.app` (mesma para homologação e produção);
 - diferença entre ambientes: apenas o valor de `X-Codigo-Escola`.
 
-### 9.5 Pendências de homologação
+### 9.5 Estado de homologação
 
-- confirmação se `id_professor` é obrigatório para a escola Madan;
-- POST real em homologação (dry-run já passa com sucesso).
+- `id_professor` obrigatório confirmado na prática — `professor_obrigatorio=True` é o default;
+- POST real validado com Arte, Inglês, Física A e Gramática (Língua Portuguesa, id=29);
+- Pendente: validação de cenários de falha (RA inválido, disciplina sem mapa).
 
 ---
 
@@ -617,13 +618,16 @@ cp .env.example .env
 
 - **Formato wide (novo):** gerador, adapter, auto-detecção e despivotamento;
 - **Retrocompatibilidade total:** planilhas no formato semi-wide antigo continuam funcionando;
-- **471 testes automatizados passando** (0 falhas) após a refatoração completa do pipeline;
+- **530 testes automatizados passando** (0 falhas);
 - Template wide gerado com cabeçalho derivado de `professores_madan.py`;
 - Adapter Pattern com isolamento total das regras pedagógicas;
-- `mapa_disciplinas.json`: 16 IDs reais coletados da interface web do iScholar;
+- `mapa_disciplinas.json`: IDs reais coletados da interface web do iScholar (`"gramatica"` e `"lingua portuguesa"` mapeados para id=29 — LÍNGUA PORTUGUESA);
 - `mapa_avaliacoes.json`: 19 IDs reais (92–110) do sistema avaliativo ID=9 "ENSINO MÉDIO (1ª E 2ª SÉRIE) - 2026";
-- `mapa_professores.json`: 25 IDs reais, 114 chaves por frente (`"matematica a"`, `"fisica b"`, etc.);
-- Dry-run passando com sucesso em todas as 9 etapas;
+- `mapa_professores.json`: IDs reais com aliases por frente (`"matematica a"`, `"fisica b"`, `"arte"`, etc.);
+- Dry-run e envio real passando com sucesso em todas as 9 etapas;
+- **Homologação assistida avançada:** POST real validado com Arte, Inglês, Física A (multi-frente) e Gramática/Língua Portuguesa — notas apareceram corretamente no diário do iScholar em todas as execuções;
+- Idempotência confirmada — reenvio bloqueado por `LoteJaAprovadoError` antes de qualquer POST;
+- `id_professor` obrigatório por default (`professor_obrigatorio=True`) — confirmado na prática durante piloto;
 - AV1/AV2 consolidados por soma simples (OBJ + DISC ≤ 10), validado pelo pedagógico;
 - 3ª série bloqueada explicitamente com motivo claro;
 - Regras de recuperação trimestral (T1/T2) e final implementadas;
@@ -635,9 +639,10 @@ cp .env.example .env
 
 ### 14.2 Pendente
 
-- POST real em homologação com notas reais;
-- Confirmação se `id_professor` é obrigatório para a escola Madan;
-- Coleta manual dos IDs de avaliação para T2 e T3 (via interface web do iScholar).
+- Validação de falhas esperadas (RA inválido, disciplina sem mapa) antes de lote completo;
+- Coleta manual dos IDs de avaliação para T2 e T3 (via interface web do iScholar);
+- Scripts de startup (`iniciar_servicos.bat`) e documentação de reinício após reboot;
+- Primeiro envio de lote completo em produção acompanhado pelo desenvolvedor.
 
 ---
 

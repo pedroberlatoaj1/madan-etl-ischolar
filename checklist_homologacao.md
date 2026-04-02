@@ -153,16 +153,16 @@ python cli_envio.py \
 
 ### 3.2 Validação de conectividade
 
-- [ ] `python descobrir_ids_ischolar.py --ra <RA_TESTE>` executa sem erro de autenticação **🔴 BLOQUEANTE**
-- [ ] `cli_envio.py` consegue inicializar `IScholarClient` sem erro (exit 5 ausente)
-- [ ] Preflight técnico completa com sucesso no ambiente de homologação
+- [x] `python descobrir_ids_ischolar.py --ra <RA_TESTE>` executa sem erro de autenticação **🔴 BLOQUEANTE**
+- [x] `cli_envio.py` consegue inicializar `IScholarClient` sem erro (exit 5 ausente)
+- [x] Preflight técnico completa com sucesso no ambiente de homologação
 
 ### 3.3 Validação do shape real da API
 
 - [x] `/aluno/busca` retorna resposta com estrutura compatível com o resolvedor (campo em `dados.informacoes_basicas.id_aluno`)
 - [x] `id_aluno` presente e único na resposta
 - [x] `/matricula/listar` retorna lista de matrículas (resolvido via heurística `status_matricula_diario == "MATRICULADO"`)
-- [ ] Confirmado com o TI se `id_professor` é obrigatório para a escola Madan **🟡 ATENÇÃO**
+- [x] `id_professor` obrigatório confirmado na prática — piloto real bloqueou sem professor; `professor_obrigatorio=True` agora é o default do sistema **🟡 ATENÇÃO**
 
 ### 3.4 Validação dos mapas com IDs reais
 
@@ -174,19 +174,19 @@ python cli_envio.py \
 
 Executar com 1–3 alunos reais em ambiente de homologação, nunca diretamente em produção:
 
-- [ ] Dry-run passa sem erros
-- [ ] Envio real executado com `--lote-id` exclusivo (ex.: `homolog-piloto-001`)
-- [ ] Exit code `0` após envio real
-- [ ] Nota aparece corretamente no diário do iScholar após o envio
-- [ ] Valor enviado é a nota bruta (não ponderada)
-- [ ] Auditoria registrada localmente no `envio_lote_audit.db`
-- [ ] Reenvio do mesmo lote não duplica nota no diário (idempotência)
+- [x] Dry-run passa sem erros
+- [x] Envio real executado com `--lote-id` exclusivo (execuções 001, 002, 003)
+- [x] Exit code `0` após envio real
+- [x] Nota aparece corretamente no diário do iScholar após o envio (confirmado visualmente nas três execuções)
+- [x] Valor enviado é a nota bruta (não ponderada)
+- [x] Auditoria registrada localmente no `envio_lote_audit.db`
+- [x] Reenvio do mesmo lote não duplica nota no diário (idempotência) — `LoteJaAprovadoError` antes de qualquer POST
 
 ### 3.6 Validação de falhas esperadas
 
-- [ ] Aluno com RA inexistente → item registrado como `erro_resolucao`, demais itens continuam
-- [ ] Disciplina sem mapeamento → item registrado como `erro_resolucao`, demais itens continuam
-- [ ] Lote com nota inválida (>10) → exit code 3, envio bloqueado antes do POST
+- [ ] Aluno com RA inexistente → item registrado como `erro_resolucao`, demais itens continuam **🟡 pendente**
+- [ ] Disciplina sem mapeamento → item registrado como `erro_resolucao`, demais itens continuam **🟡 pendente**
+- [ ] Lote com nota inválida (>10) → exit code 3, envio bloqueado antes do POST **🟡 pendente**
 
 ---
 
@@ -196,13 +196,14 @@ Executar com 1–3 alunos reais em ambiente de homologação, nunca diretamente 
 
 Todos os itens abaixo precisam estar marcados:
 
-- [ ] Smoke test local passou (exit 0 no dry-run, zero erros de resolução)
-- [ ] Conectividade com homologação validada
-- [ ] Shape real das APIs validado com o TI
-- [ ] Mapas preenchidos com IDs reais de homologação
-- [ ] POST real em homologação bem-sucedido (piloto 1–3 alunos)
-- [ ] Nota aparece corretamente no diário de homologação
-- [ ] Idempotência confirmada (reenvio não duplica)
+- [x] Smoke test local passou (exit 0 no dry-run, zero erros de resolução)
+- [x] Conectividade com homologação validada
+- [x] Shape real das APIs validado com o TI
+- [x] Mapas preenchidos com IDs reais de homologação
+- [x] POST real em homologação bem-sucedido — validado com Arte, Inglês, Física A e Gramática (Língua Portuguesa)
+- [x] Nota aparece corretamente no diário de homologação (confirmado visualmente nas execuções 001, 002, 003)
+- [x] Idempotência confirmada (reenvio não duplica) — `LoteJaAprovadoError` bloqueia antes de qualquer POST
+- [ ] Validação de falhas esperadas (RA inválido, disciplina sem mapa) — **🟡 pendente antes de lote completo**
 - [ ] Primeiro envio em produção acompanhado pelo desenvolvedor
 
 ### 🔴 Não avançar se
@@ -214,7 +215,7 @@ Qualquer um dos itens abaixo estiver presente:
 - [ ] Erros de resolução de IDs > 0 no dry-run
 - [ ] Nota não aparece no diário após POST real em homologação
 - [ ] Shape de resposta da API diferente do esperado pelo resolvedor
-- [ ] TI não confirmou obrigatoriedade de `id_professor` quando este for necessário
+- [x] ~~TI não confirmou obrigatoriedade de `id_professor`~~ — confirmado na prática; `professor_obrigatorio=True` é o default
 - [ ] Mapeamentos preenchidos "no chute" sem confirmação com o iScholar
 
 ---
@@ -228,12 +229,12 @@ Qualquer um dos itens abaixo estiver presente:
 | Shape real de `/aluno/busca` | Desenvolvedor | **Resolvido** — campo em `dados.informacoes_basicas.id_aluno` |
 | Shape real de `/matricula/listar` | Desenvolvedor | **Resolvido** — heurística MATRICULADO |
 | `/diario/notas` para tokens de integração | TI do iScholar | **Bloqueado** — não afeta envio |
-| Confirmação se `id_professor` é obrigatório para o Madan | TI do iScholar | **Pendente** |
+| Confirmação se `id_professor` é obrigatório para o Madan | TI do iScholar | **Confirmado na prática** — sistema bloqueou sem professor; default alterado para `True` |
 | IDs reais de disciplina | Desenvolvedor | **Resolvido** — 16 IDs coletados da interface web |
 | IDs reais de avaliação | Desenvolvedor | **Resolvido** — 19 IDs do sistema avaliativo ID=9 |
 | IDs reais de professor | Desenvolvedor | **Resolvido** — 25 IDs coletados da interface web |
-| POST real em homologação | Operador | **Pendente** — próximo passo |
-| Teste de idempotência | Operador | **Pendente** |
+| POST real em homologação | Operador | **Concluído** — execuções 001 (Arte), 002 (Inglês), 003 (Física A + Gramática) |
+| Teste de idempotência | Operador | **Concluído** — `LoteJaAprovadoError` confirmado em execução 001 |
 | Adoção formal do template fixo pelo Madan | Madan | Pendente |
 | Garantia de preenchimento do RA pelo Madan | Madan | Pendente |
 
@@ -285,6 +286,28 @@ Qualquer um dos itens abaixo estiver presente:
 | Exit code | 0 |
 | Warnings presentes | ⚠️ mesmos `PROFESSOR_NAO_ENCONTRADO_REGISTRO` da execução 001 (arte, biologia, fisica a/b/c). Inglês não gerou aviso — professor `"ingles": 60` já estava no mapa e no registro oficial. |
 | Observações | Confirma que o fluxo funciona para disciplinas além de Arte. Inglês tem professor único sem dependência de série — escolha ideal para segundo piloto. Nota 10 no diário é soma de AV1 Obj (6+5+7) + AV1 Disc (4+5+3) conforme ponderação do iScholar. |
+
+---
+
+### Execução 003 — Piloto Ampliado (Física A + Gramática/Língua Portuguesa)
+
+| Campo | Valor |
+|-------|-------|
+| Data | 2026-04-02 |
+| Ambiente | produção (iScholar real) |
+| Lote ID (tentativa 1) | homolog-piloto-005-real |
+| Lote ID (real, v2) | homolog-piloto-005-real-v2 |
+| Planilha | planilha_homolog_piloto_ampliado.xlsx |
+| Disciplinas testadas | Física A (multi-frente) e Gramática — Frente Única (AV 1 Obj + AV 1 Disc) |
+| Alunos | 3 (ALICE BARCELOS LINS / RA 1222, ALICE DE MEDEIROS GARCIA / RA 1239, ALICE DE SÁ FREITAS SOARES / RA 1437 — Turma 1A, T2) |
+| Operador / aprovador | pedro |
+| Resultado dry-run | ✅ sucesso — 6/6 processados, 0 erros de resolução |
+| Resultado POST real | ✅ sucesso — 6/6 enviados, status `sent`, exit code 0 (após correção de mapeamento) |
+| Evidência no diário | ✅ notas apareceram corretamente no diário do iScholar — LÍNGUA PORTUGUESA com professor NERYANNE REIS ZANOTELLI, notas 7/10/8 para as 3 alunas (confirmado visualmente) |
+| Idempotência | não testada nesta execução (já validada na execução 001) |
+| Exit code | 0 |
+| Bug corrigido nesta execução | `mapa_disciplinas.json` tinha `"gramatica": 172` (id inválido). iScholar retornou HTTP 200 + `{"status":"erro", "mensagem":"Disciplina não pertence a grade curricular..."}` — diagnóstico via `envio_lote_audit.db`. Corrigido: `"gramatica": 29`, `"lingua portuguesa": 29` (id confirmado via interface web do iScholar). |
+| Observações | Gramática não existe como disciplina autônoma no iScholar para 1ª e 2ª série — está cadastrada como **LÍNGUA PORTUGUESA** (id=29, sigla POR). Literatura e Gramática compartilham a mesma disciplina; o professor é o elemento que diferencia as frentes. Física A validou o cenário multi-frente (disciplina com mais de uma frente por turma). |
 
 ---
 

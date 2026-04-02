@@ -103,6 +103,8 @@ No envio:
 
 ## 6. Teste manual rapido
 
+> **Estado atual:** o fluxo de envio via CLI foi validado em homologação assistida com múltiplas disciplinas (Arte, Inglês, Física A, Gramática/Língua Portuguesa). O próximo passo é validar o fluxo completo via Google Sheets (backend + worker) com planilha real antes do go-live em escala.
+
 1. Inicie backend e worker.
 2. Abra a planilha.
 3. Preencha ou ajuste a aba `Notas`.
