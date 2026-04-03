@@ -645,7 +645,27 @@ class ResolvedorIDsHibrido(ResolvedorIDsAbstrato):
             ids_ambiguos: list[int] = (
                 (lista.rastreabilidade or {}).get("id_matriculas_extraiados", [])
             )
-            if len(ids_ambiguos) > 1:
+            if len(ids_ambiguos) == 0:
+                # Tentativa 2b: sem filtro retornou 0 resultados — aluno pode
+                # ter situação "CURSANDO" (não "MATRICULADO") na API iScholar.
+                # Descoberto na Onda B (2026-04-04): API retorna lista vazia
+                # sem filtro para alunos com situacao=CURSANDO.
+                for situacao in ("cursando", "CURSANDO"):
+                    tentativa = self._cliente.listar_matriculas(
+                        id_aluno=id_aluno_resolvido,
+                        resolver_id_matricula=True,
+                        situacao=situacao,
+                    )
+                    if tentativa.sucesso and tentativa.id_matricula_resolvido is not None:
+                        detalhes["matricula_heuristica"] = {
+                            "motivo": f"filtro_situacao={situacao} (zero resultados sem filtro)",
+                            "id_escolhido": tentativa.id_matricula_resolvido,
+                        }
+                        fonte_resolucao["id_matricula"] = (
+                            f"api:listar_matriculas+situacao={situacao}_zero_results"
+                        )
+                        return tentativa.id_matricula_resolvido
+            elif len(ids_ambiguos) > 1:
                 # Tentativa 2: filtrar por situacao
                 for situacao in ("cursando", "CURSANDO"):
                     tentativa = self._cliente.listar_matriculas(
