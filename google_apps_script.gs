@@ -16,6 +16,21 @@
  * - guarda lote_id / snapshot_hash localmente entre validacao e aprovacao.
  */
 
+// ---------------------------------------------------------------------------
+// ATENÇÃO — diferença entre arquivo versionado e instância implantada:
+//
+// Este arquivo mantém PLACEHOLDERS por segurança.
+// Os valores reais são inseridos manualmente na instância implantada no Google Sheets
+// (Extensões > Apps Script) a cada sessão de uso.
+//
+// Campos que devem ser preenchidos manualmente na instância implantada:
+//   API_BASE_URL    → URL pública HTTPS do túnel ngrok (muda a cada reinício)
+//   WEBHOOK_SECRET  → valor do campo WEBHOOK_SECRET no arquivo .env do backend
+//   NOME_ABA_NOTAS  → nome exato da aba na planilha Google Sheets (padrão: "Notas")
+//
+// Qualquer mudança ESTRUTURAL neste arquivo (nova função, novo endpoint, nova lógica)
+// deve ser refletida no repositório. Valores sensíveis nunca devem ser commitados.
+// ---------------------------------------------------------------------------
 const API_BASE_URL = "https://sua-api.com";
 const WEBHOOK_SECRET = "troque_por_um_segredo_forte_em_producao";
 const NOME_ABA_NOTAS = "Notas";
@@ -274,7 +289,8 @@ function chamarApi_(method, path, body) {
   var headers = {
     "X-Webhook-Secret": WEBHOOK_SECRET,
     "X-Webhook-Timestamp": String(Math.floor(Date.now() / 1000)),
-    "X-Webhook-Nonce": Utilities.getUuid()
+    "X-Webhook-Nonce": Utilities.getUuid(),
+    "ngrok-skip-browser-warning": "true"
   };
 
   var opcoes = {

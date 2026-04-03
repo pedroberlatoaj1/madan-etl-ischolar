@@ -34,7 +34,7 @@ O ngrok (plano gratuito) exibe uma página de aviso antes de repassar a requisi�
 ngrok-skip-browser-warning: true
 ```
 
-Este header já está configurado na função `chamarApi_` do `google_apps_script.gs`. Não remover.
+Este header está configurado na função `chamarApi_` do `google_apps_script.gs` versionado no repositório. Ao copiar o script para uma nova instância no Google Sheets, o header já estará presente. Não remover.
 
 ### Sequência correta de subida
 
