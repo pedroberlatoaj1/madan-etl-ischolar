@@ -204,7 +204,7 @@ Todos os itens abaixo precisam estar marcados:
 - [x] Nota aparece corretamente no diário de homologação (confirmado visualmente nas execuções 001, 002, 003)
 - [x] Idempotência confirmada (reenvio não duplica) — `LoteJaAprovadoError` bloqueia antes de qualquer POST
 - [ ] Validação de falhas esperadas (RA inválido, disciplina sem mapa) — **🟡 pendente antes de lote completo**
-- [ ] Primeiro envio em produção acompanhado pelo desenvolvedor
+- [x] Primeiro envio em produção acompanhado pelo desenvolvedor — **confirmado na Execução 005 (Onda A via Google Sheets, 2026-04-04)**
 
 ### 🔴 Não avançar se
 
@@ -233,7 +233,7 @@ Qualquer um dos itens abaixo estiver presente:
 | IDs reais de disciplina | Desenvolvedor | **Resolvido** — 16 IDs coletados da interface web |
 | IDs reais de avaliação | Desenvolvedor | **Resolvido** — 19 IDs do sistema avaliativo ID=9 |
 | IDs reais de professor | Desenvolvedor | **Resolvido** — 25 IDs coletados da interface web |
-| POST real em homologação | Operador | **Concluído** — execuções 001 (Arte), 002 (Inglês), 003 (Física A + Gramática) |
+| POST real em homologação | Operador | **Concluído** — execuções 001 (Arte), 002 (Inglês), 003 (Física A + Gramática), 005 (Onda A via Sheets) |
 | Teste de idempotência | Operador | **Concluído** — `LoteJaAprovadoError` confirmado em execução 001 |
 | Adoção formal do template fixo pelo Madan | Madan | Pendente |
 | Garantia de preenchimento do RA pelo Madan | Madan | Pendente |
@@ -331,6 +331,28 @@ Qualquer um dos itens abaixo estiver presente:
 | Dialog no Sheets | ✅ "Validacao concluida. O lote esta apto para aprovacao." |
 | Evidência no diário | — (sem POST real nesta execução) |
 | Observações | Primeiro teste end-to-end via Google Sheets. Túnel ngrok usado para expor backend. Header `ngrok-skip-browser-warning: true` necessário em todas as requisições. Pendências IDENTIFICADOR_ISCHOLAR_PENDENTE são não-bloqueantes — resolvidas apenas no envio real. Gate de validação via Sheets: **FECHADO**. |
+
+---
+
+### Execução 005 — Onda A: Primeiro POST real via Google Sheets
+
+| Campo | Valor |
+|-------|-------|
+| Data | 2026-04-04 |
+| Ambiente | produção (iScholar real) |
+| Lote ID | 1-xFbHa89XLIIxqcGbCtwzuB2lN4anFjt1cZjWdJzhAg/Notas |
+| Snapshot hash | ed12bb6fbbf9259743c662b205b1954cd2f577475cca4efb7c399d247adee341 |
+| Planilha | Google Sheets (aba "Notas") |
+| Disciplina testada | Gramática — Frente Única (AV 1 Obj + AV 1 Disc) |
+| Alunos | 3 (ALICE BARCELOS LINS RA 1222 → 7, ALICE DE MEDEIROS GARCIA RA 1239 → 10, ALICE DE SÁ FREITAS SOARES RA 1437 → 8 — Turma 1A, T2) |
+| Operador / aprovador | Pedro (email: pedroberlatoaj1@gmail.com, identidade: medium) |
+| Resultado POST /webhook/notas | ✅ HTTP 202 |
+| Resultado worker | ✅ job processado |
+| Resultado GET /lote/{id}/validacao | ✅ validation_pending_approval, pode_aprovar: true |
+| Resultado Aprovar e Enviar | ✅ 3/3 enviados, 0 erros de resolução, 0 erros de envio, status: sent |
+| Evidência no diário | ✅ notas 7, 10 e 8 visíveis no diário do iScholar para as 3 alunas (confirmado visualmente) |
+| Identidade do aprovador | medium (email de sessão Apps Script disponível) |
+| Observações | **Primeiro fluxo completo end-to-end via Google Sheets com POST real no iScholar.** Fluxo: Apps Script → ngrok → backend → worker → iScholar. Snapshot hash coerente entre validação (Execução 004) e aprovação. Onda A: **FECHADA**. |
 
 ---
 
