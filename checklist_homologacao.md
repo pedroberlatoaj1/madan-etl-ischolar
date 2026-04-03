@@ -311,6 +311,29 @@ Qualquer um dos itens abaixo estiver presente:
 
 ---
 
+### Execução 004 — Gate Validação via Google Sheets (sem POST real)
+
+| Campo | Valor |
+|-------|-------|
+| Data | 2026-04-03 |
+| Ambiente | produção (iScholar real — sem POST, apenas validação) |
+| Lote ID | 1-xFbHa89XLIIxqcGbCtwzuB2lN4anFjt1cZjWdJzhAg/Notas |
+| Snapshot hash | ed12bb6fbbf9259743c662b205b1954cd2f577475cca4efb7c399d247adee341 |
+| Planilha | Google Sheets (nova, aba "Notas") |
+| Disciplina testada | Gramática — Frente Única (AV 1 Obj + AV 1 Disc) |
+| Alunos | 3 (RA 1222, 1239, 1437 — Turma 1A, T2) |
+| Operador / aprovador | pedro |
+| Resultado auth sem secret | ✅ HTTP 401 na rota protegida `/lote/__probe__/validacao` |
+| Resultado auth com secret | ✅ HTTP 404 (auth passou, lote inexistente esperado) |
+| Resultado POST /webhook/notas | ✅ HTTP 202, job_id e snapshot_hash presentes |
+| Resultado worker | ✅ job processado com sucesso |
+| Resultado GET /lote/{id}/validacao | ✅ status: validation_pending_approval, finalizado: true, pode_aprovar: true |
+| Dialog no Sheets | ✅ "Validacao concluida. O lote esta apto para aprovacao." |
+| Evidência no diário | — (sem POST real nesta execução) |
+| Observações | Primeiro teste end-to-end via Google Sheets. Túnel ngrok usado para expor backend. Header `ngrok-skip-browser-warning: true` necessário em todas as requisições. Pendências IDENTIFICADOR_ISCHOLAR_PENDENTE são não-bloqueantes — resolvidas apenas no envio real. Gate de validação via Sheets: **FECHADO**. |
+
+---
+
 ### Template para próximas execuções
 
 | Campo | Valor |

@@ -9,6 +9,43 @@ O Google Sheets funciona como cliente fino:
 - mostra dialogs simples;
 - guarda `lote_id`, `snapshot_hash` e os `job_id` mais recentes localmente entre as etapas.
 
+## 0. Requisitos operacionais — leia antes de subir
+
+### Túnel HTTPS (obrigatório para o Apps Script alcançar o backend)
+
+O Apps Script do Google Sheets roda nos servidores do Google e não consegue acessar `localhost`. É necessário expor o backend com um túnel HTTPS público.
+
+**Subir o túnel:**
+```powershell
+& "C:\Users\PICHAU\Downloads\ngrok-v3-stable-windows-amd64\ngrok.exe" http 5000
+```
+
+Ou dar double-click em `subir_tunel.bat`.
+
+**Copiar a URL** da linha `Forwarding https://XXXX.ngrok-free.app` e atualizar `API_BASE_URL` no Apps Script a cada reinício.
+
+> **Atenção:** a URL do ngrok muda a cada vez que o túnel é reiniciado (plano gratuito). O operador deve copiar a nova URL e colar no Apps Script (`Extensões > Apps Script > constante API_BASE_URL`) antes de cada sessão de uso.
+
+### Header obrigatório para ngrok
+
+O ngrok (plano gratuito) exibe uma página de aviso antes de repassar a requisição ao backend. Para contornar isso, todas as requisições do Apps Script ao backend devem incluir o header:
+
+```
+ngrok-skip-browser-warning: true
+```
+
+Este header já está configurado na função `chamarApi_` do `google_apps_script.gs`. Não remover.
+
+### Sequência correta de subida
+
+1. Subir backend (`webhook_google_sheets.py`)
+2. Subir worker (`worker.py`)
+3. Subir túnel ngrok
+4. Atualizar `API_BASE_URL` no Apps Script com a nova URL do ngrok
+5. Abrir a planilha Google Sheets e usar o menu `iScholar ETL`
+
+---
+
 ## 1. Subir backend e worker
 
 Antes de rodar o backend, o worker ou os testes do webhook no ambiente de desenvolvimento:
