@@ -356,6 +356,26 @@ Qualquer um dos itens abaixo estiver presente:
 
 ---
 
+### Execução 006 — Onda B: Lote completo 1A via Google Sheets (91 sendáveis)
+
+| Campo | Valor |
+|-------|-------|
+| Data | 2026-04-04 |
+| Ambiente | produção (iScholar real) |
+| Lote ID | 1-xFbHa89XLIIxqcGbCtwzuB2lN4anFjt1cZjWdJzhAg/Notas |
+| Planilha | Google Sheets (aba "Notas") — turma 1A completa |
+| Disciplinas testadas | Arte + Inglês (Frente Única, AV 1 Obj + AV 1 Disc) |
+| Alunos | ~44 alunos da turma 1A T2 |
+| Total sendáveis | 91 |
+| Operador / aprovador | Pedro |
+| Resultado | 71–72 enviados / 8 erro_resolucao / 12 erro_envio |
+| Evidência no diário | ✅ confirmado visualmente — exatamente 10 alunos sem nota (os esperados pelo audit) |
+| Bug descoberto | `resolvedor_ids_ischolar.py`: heurística `situacao=cursando` só ativava com múltiplos resultados. Corrigido para ativar também com 0 resultados. Fix commitado em 034f914. |
+| Erros residuais | **8 erro_resolucao (4 alunos):** matrícula não acessível via API mesmo com filtro `situacao=cursando` — dado iScholar incompleto. **12 erro_envio (6 alunos):** grade curricular diferente no iScholar — alunos em trilha separada. Ambos requerem intervenção do admin iScholar. |
+| Observações | Onda B valida escala operacional. Pipeline isolou corretamente todos os erros sem bloquear os 71+ enviados com sucesso. Erros são dados do iScholar, não bugs do pipeline. |
+
+---
+
 ### Template para próximas execuções
 
 | Campo | Valor |
