@@ -211,7 +211,7 @@ PROFESSORES: list[ProfessorMadan] = [
     ),
     ProfessorMadan(
         nome="EDSON CAMPOS PERRONE", apelido="Perrone", materia_sigla="BIO",
-        turmas_1a=["A"], turmas_2a=[], turmas_3a=["F3"], frentes_med=[],
+        turmas_1a=[], turmas_2a=["A"], turmas_3a=["F3"], frentes_med=[],
         frentes_ext=[], frentes_ita=[],
         email="ecperrone@gmail.com",
     ),
@@ -223,8 +223,8 @@ PROFESSORES: list[ProfessorMadan] = [
     ),
     ProfessorMadan(
         nome="EMANUELLY DUARTE VALENTE", apelido=None, materia_sigla="RED",
-        turmas_1a=[], turmas_2a=["•"], turmas_3a=["•"], frentes_med=["•"],
-        frentes_ext=[], frentes_ita=[],
+        turmas_1a=[], turmas_2a=[], turmas_3a=["•"], frentes_med=["•"],
+        frentes_ext=["•"], frentes_ita=["•"],
         email=None,
     ),
     ProfessorMadan(
@@ -241,8 +241,8 @@ PROFESSORES: list[ProfessorMadan] = [
     ),
     ProfessorMadan(
         nome="FILIPE PINEL BERBERT BERMUDES", apelido=None, materia_sigla="MAT",
-        turmas_1a=[], turmas_2a=[], turmas_3a=["F3"], frentes_med=[],
-        frentes_ext=[], frentes_ita=[],
+        turmas_1a=[], turmas_2a=[], turmas_3a=[], frentes_med=[],
+        frentes_ext=["F3"], frentes_ita=[],
         email="filipe.pinel@gmail.com",
     ),
     ProfessorMadan(
@@ -271,8 +271,8 @@ PROFESSORES: list[ProfessorMadan] = [
     ),
     ProfessorMadan(
         nome="IANA LIMA CORDEIRO", apelido=None, materia_sigla="LIT",
-        turmas_1a=["•"], turmas_2a=["•"], turmas_3a=["•"], frentes_med=[],
-        frentes_ext=[], frentes_ita=[],
+        turmas_1a=["•"], turmas_2a=["•"], turmas_3a=[], frentes_med=[],
+        frentes_ext=["•"], frentes_ita=[],
         email="iana-cordeiro@hotmail.com",
     ),
     ProfessorMadan(
@@ -283,7 +283,7 @@ PROFESSORES: list[ProfessorMadan] = [
     ),
     ProfessorMadan(
         nome="JANAINA DEZAN GARCIA", apelido=None, materia_sigla="LIT",
-        turmas_1a=[], turmas_2a=["•"], turmas_3a=[], frentes_med=["•"],
+        turmas_1a=[], turmas_2a=[], turmas_3a=["•"], frentes_med=["•"],
         frentes_ext=[], frentes_ita=[],
         email="janaina_literatura@hotmail.com",
     ),
@@ -326,7 +326,7 @@ PROFESSORES: list[ProfessorMadan] = [
     ProfessorMadan(
         nome="LUCAS GOMES COSTA", apelido=None, materia_sigla="INT TEX",
         turmas_1a=["•"], turmas_2a=["•"], turmas_3a=["•"], frentes_med=["•"],
-        frentes_ext=[], frentes_ita=[],
+        frentes_ext=["•"], frentes_ita=["•"],
         email="lucasgc12@gmail.com",
     ),
     ProfessorMadan(
@@ -338,7 +338,7 @@ PROFESSORES: list[ProfessorMadan] = [
     ProfessorMadan(
         nome="MARINA LIMA MONTEIRO", apelido=None, materia_sigla="LIT",
         turmas_1a=[], turmas_2a=[], turmas_3a=[], frentes_med=[],
-        frentes_ext=["•"], frentes_ita=[],
+        frentes_ext=[], frentes_ita=["•"],
         email="marina@madan.com.br",
     ),
     ProfessorMadan(
@@ -361,7 +361,7 @@ PROFESSORES: list[ProfessorMadan] = [
     ),
     ProfessorMadan(
         nome="SÉRGIO GOMES DA SILVA JUNIOR", apelido=None, materia_sigla="RED",
-        turmas_1a=[], turmas_2a=[], turmas_3a=["•"], frentes_med=[],
+        turmas_1a=[], turmas_2a=["•"], turmas_3a=[], frentes_med=[],
         frentes_ext=[], frentes_ita=[],
         email=None,
     ),
