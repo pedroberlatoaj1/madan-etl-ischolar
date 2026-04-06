@@ -38,11 +38,85 @@ Este header está configurado na função `chamarApi_` do `google_apps_script.gs
 
 ### Sequência correta de subida
 
-1. Subir backend (`webhook_google_sheets.py`)
-2. Subir worker (`worker.py`)
-3. Subir túnel ngrok
+**Opção rápida (double-click):**
+1. `iniciar_servicos.bat` — sobe backend + worker em janelas separadas (aguardar ~3s)
+2. `subir_tunel.bat` — sobe o túnel ngrok
+3. Copiar URL `https://XXXX.ngrok-free.app` → colar em `API_BASE_URL` no Apps Script
+4. Abrir a planilha Google Sheets e usar o menu `iScholar ETL`
+
+**Opção manual (terminal):**
+1. Terminal 1: `.venv\Scripts\python.exe webhook_google_sheets.py`
+2. Terminal 2: `.venv\Scripts\python.exe worker.py`
+3. Terminal 3: `subir_tunel.bat` ou ngrok direto
 4. Atualizar `API_BASE_URL` no Apps Script com a nova URL do ngrok
 5. Abrir a planilha Google Sheets e usar o menu `iScholar ETL`
+
+> **Startup via `iniciar_servicos.bat`:** logs gravados em `logs/webhook.log` e `logs/worker.log`. Se algo não subir, abrir esses arquivos para diagnóstico.
+
+---
+
+## Status de validacao
+
+**Fluxo completo via Google Sheets validado com POST real no iScholar.**
+**Projeto pronto para go-live assistido. Aceite pendente de sessao com operador.**
+
+| Etapa | Resultado | Evidencia |
+|-------|-----------|-----------|
+| Gate de validacao (sem POST) | ✅ comprovado | Execucao 004 |
+| Onda A — envio pequeno (3 alunos, 1 disciplina) | ✅ 3/3 enviados, notas no diario | Execucao 005 |
+| Onda B — lote completo (44 alunos, 2 disciplinas) | ✅ 71/91 enviados, erros isolados | Execucao 006 |
+| snapshot_hash coerente entre validacao e aprovacao | ✅ comprovado | |
+| Fluxo completo sem intervencao do dev | ✅ comprovado | |
+
+**O que ainda depende de sessao com operador:**
+- Handoff observado (operador executar o fluxo sozinho)
+- Aceite formal assinado
+- Resolucao dos 10 alunos com dados inconsistentes no iScholar (ver `pendencias_admin_ischolar.md`)
+
+---
+
+## Regras operacionais
+
+### Lote homogeneo
+
+Um lote de envio deve ser homogeneo por turma, trilha, grade curricular e sistema
+avaliativo. Se a escola tiver alunos em trilhas diferentes dentro da mesma turma,
+esses alunos devem ser enviados em lotes separados com os IDs corretos.
+
+O pipeline NAO tenta adivinhar a grade do aluno. Se o iScholar rejeitar uma nota
+com "Disciplina nao pertence a grade curricular", o aluno esta em uma trilha diferente.
+
+### send_failed com sucesso parcial
+
+O status `send_failed` significa "houve pelo menos um erro no lote". Ele pode
+coexistir com muitos envios bem-sucedidos. O operador deve SEMPRE ler os contadores:
+
+- `Quantidade enviada: 71` — 71 notas foram enviadas com sucesso
+- `Quantidade com erro: 20` — 20 falharam
+- `Erros de resolucao: 8` — 8 por RA/matricula nao encontrado
+- `Erros de envio: 12` — 12 por rejeicao do iScholar
+
+`send_failed` NAO significa "nada foi enviado".
+
+### Erro do pipeline vs erro externo do iScholar
+
+| Tipo | Significado | O que fazer |
+|------|-------------|-------------|
+| `erro_resolucao` | RA nao encontrado ou matricula nao acessivel na API | Verificar com admin iScholar |
+| `erro_envio` | iScholar rejeitou a nota (grade/disciplina/avaliacao) | Verificar trilha do aluno |
+| Erro de rede / timeout | Backend ou iScholar temporariamente indisponivel | Aguardar e tentar novamente |
+
+O pipeline isola cada erro sem bloquear os demais envios.
+
+### Tunel expirado
+
+Se o ngrok cair ou expirar:
+1. O Sheets vai mostrar erro de conexao
+2. Subir o tunel novamente: double-click em `subir_tunel.bat`
+3. Copiar a nova URL e atualizar `API_BASE_URL` no Apps Script
+4. Continuar normalmente — o lote pode ser revalidado
+
+O backend e o worker NAO precisam ser reiniciados quando o tunel cai.
 
 ---
 
@@ -140,7 +214,7 @@ No envio:
 
 ## 6. Teste manual rapido
 
-> **Estado atual:** o fluxo de envio via CLI foi validado em homologação assistida com múltiplas disciplinas (Arte, Inglês, Física A, Gramática/Língua Portuguesa). O próximo passo é validar o fluxo completo via Google Sheets (backend + worker) com planilha real antes do go-live em escala.
+> **Estado atual:** fluxo validado end-to-end via Google Sheets com POST real no iScholar (Onda A e Onda B concluidas). Ver secao "Status de validacao" acima.
 
 1. Inicie backend e worker.
 2. Abra a planilha.
