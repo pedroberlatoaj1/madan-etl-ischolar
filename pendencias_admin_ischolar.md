@@ -72,6 +72,40 @@ nao inclui as disciplinas Arte e/ou Ingles com o mesmo sistema avaliativo.
 
 ---
 
+## Grupo C â€” Turma 2A fora do sistema avaliativo esperado (Plano B)
+
+**Sintoma:** A API encontrou a matricula e resolveu o `id_matricula`, mas rejeitou
+o envio da nota para alunos de `2A` com erro de sistema avaliativo.
+
+**Mensagem do iScholar:**
+- `Divisao nao pertence ao sistema avaliativo da turma vinculada a matricula informada na requisicao.`
+
+**Cenarios observados:**
+- `2A_T2` â€” POST real rejeitado para 3/3 itens de Arte
+- `2A_T1` â€” POST real rejeitado para 3/3 itens de Arte
+
+**Leitura tecnica:** o pipeline chegou ao POST real com `erros_resolucao = 0`.
+Portanto, a falha nao esta em RA, matricula, professor ou leitura multi-aba.
+O indicio mais forte e que a turma `2A` (ou as matriculas desses alunos dentro de `2A`)
+nao esta vinculada, no iScholar, ao mesmo sistema avaliativo/divisoes usado pelo projeto.
+
+**Evidencia adicional da interface:** na tela "Turmas que utilizam este sistema avaliativo",
+apareciam `1A`, `1B` e `2B`, mas nao `2A`, reforcando a suspeita de configuracao divergente.
+
+**Alunos usados no piloto tecnico de 2A:**
+- AGEU ANDRADE CAMPOS LOPES
+- ALICE WILCKI AZEVEDO
+- AMABELE DE MARTIN TELES PEYNEAU PUPPIN
+
+**Acao esperada do admin iScholar / pedagogico:**
+1. Confirmar qual sistema avaliativo esta vinculado hoje a turma `2A`
+2. Confirmar se `2A` deveria usar o mesmo sistema avaliativo de `1A`, `1B` e `2B`
+3. Verificar se as divisoes `BIM1`, `BIM2` e `BIM3` estao realmente associadas a `2A`
+4. Ajustar o vinculo da turma ou da matricula dos alunos testados, se necessario
+5. Apos regularizacao, rerodar o piloto em `2A_T1` com `Matematica Frente A` para validar o caso sensivel de professor
+
+---
+
 ## Regra operacional
 
 > **RA correto + UI mostra matricula + API retorna vazio ou rejeita disciplina =

@@ -240,6 +240,48 @@ Qualquer um dos itens abaixo estiver presente:
 
 ---
 
+## 5.1 Expansao controlada para o 2o ano
+
+> **Atualizacao de status (2026-04-07):**
+> - RAs reais de `2A` e `2B` ja foram usados no checker de cadastro;
+> - `buscar_aluno` + `listar_matriculas` ja foram validados tecnicamente para as turmas do 2o ano, com pendencias isoladas por aluno;
+> - `2A_T1` ja passou pelo dry-run tecnico no workbook anual;
+> - `2B_T1 / Arte` foi enviado com sucesso em producao real via Plano B (3/3 enviados, 0 erros);
+> - `2A_T1` e `2A_T2` chegaram ao POST real, mas o iScholar rejeitou os itens com
+>   `Divisao nao pertence ao sistema avaliativo da turma vinculada a matricula informada na requisicao`;
+> - isso caracteriza pendencia de sistema avaliativo/configuracao do `2A`, nao falha da arquitetura Plano B;
+> - apos regularizacao do `2A` no iScholar, o proximo teste alvo deve ser:
+>   **aba `2A_T1` -> Matematica Frente A -> 2 ou 3 alunos**, para fechar a validacao
+>   do caso sensivel de professor (`Daniel`, id 66).
+
+> **Desambiguacao automatica implementada (Plano B):** o adaptador wide agora resolve o professor
+> correto por turma a partir do nome da aba (`2A_T1`, `2B_T2`, etc.). Aliases manuais em
+> `Frente - Professor` nao sao mais necessarios no fluxo Plano B. Os itens abaixo refletem
+> o estado atual.
+
+- [ ] Confirmar nomes das turmas do iScholar para o 2o ano (`2A`, `2B` ou variante oficial) **BLOQUEANTE**
+- [ ] Obter RA real de 1-2 alunos de `2A` e `2B` para dry-run tecnico **BLOQUEANTE**
+- [ ] Validar `buscar_aluno` + `listar_matriculas` para alunos reais do 2o ano **BLOQUEANTE**
+- [x] ~~Rodar piloto com aliases explicitos em `Frente - Professor`~~ — **automatizado via Plano B**: o adaptador qualifica a chave com o professor correto ao detectar a turma no nome da aba
+- [ ] Dry-run com aba `2A_T1` do workbook anual — confirmar resolucao automatica de professor **BLOQUEANTE**
+- [ ] Confirmar no diario do iScholar um envio pequeno do 2o ano via aba `2A_T1` (Sheets) **BLOQUEANTE**
+- [ ] Validar a geracao automatica de planilhas 2A/2B com o registro do PDF 2026 ja reconciliado
+- [ ] Confirmar no iScholar os casos ainda sensiveis: Redacao, Literatura e Interpretacao de Texto no 2o ano
+
+Resolucao automatica por turma ja implementada e testada unitariamente:
+
+| Turma | Disciplina / Frente | Professor resolvido automaticamente |
+|-------|---------------------|--------------------------------------|
+| 2A    | Matematica Frente A | Daniel (id 66)                       |
+| 2B    | Matematica Frente B | Luan (id 71)                         |
+| 2C    | Matematica Frente C | Carioca (id 57)                      |
+| 2A    | Biologia            | Perrone (id 86)                      |
+| 2B    | Biologia Frente B   | Mayara (id 59)                       |
+| 2A    | Geografia Frente A  | Carla (id 72)                        |
+| 2B    | Geografia Frente B  | Moreto (id 165)                      |
+
+---
+
 ## 6. Registro de execução do checklist
 
 ---
@@ -261,6 +303,28 @@ Qualquer um dos itens abaixo estiver presente:
 | Evidência no diário | ✅ notas apareceram corretamente no diário do iScholar (confirmado visualmente) |
 | Idempotência | ✅ reenvio com mesmo lote-id bloqueado com `LoteJaAprovadoError` antes de qualquer POST |
 | Exit code | 0 |
+| ObservaÃ§Ãµes | 10 linhas processadas, 30 itens sendÃ¡veis, 0 erros. Planilha com 3 alunos (RA 1222, 1239, 1437) Ã— 7 disciplinas. Avisos PROFESSOR_NAO_ENCONTRADO_REGISTRO nÃ£o bloqueantes (frentes tipo "Matematica A" vs registro hardcoded). Auto-detecÃ§Ã£o de header funcionou (planilha com cÃ©lula mesclada na linha 1). |
+
+---
+
+### ExecuÃ§Ã£o 007 â€” Plano B: piloto real 2B_T1 com Arte
+
+| Campo | Valor |
+|-------|-------|
+| Data | 2026-04-07 |
+| Ambiente | produÃ§Ã£o (iScholar real) |
+| Lote ID | `plano-b-2b-t1-arte-real` |
+| Planilha | `dryrun2ano.xlsx` â€” workbook anual multi-aba, aba `2B_T1` |
+| Disciplina testada | Arte â€” Frente Ãšnica |
+| Alunos | 3 alunos da turma 2B (`OK` no checker de cadastro) |
+| Operador / aprovador | Coordenacao |
+| Resultado dry-run | n/a â€” registro baseado no POST real validado |
+| Resultado POST real | **Sucesso** â€” 3/3 enviados, 0 erros de resolucao, 0 erros de envio, status final `sent` |
+| EvidÃªncia no diÃ¡rio | âœ… confirmado visualmente no iScholar â€” notas postadas corretamente |
+| IdempotÃªncia | pendente de teste dedicado |
+| Exit code | 0 |
+| Warnings presentes | âš ï¸ `PROFESSOR_NAO_ENCONTRADO_REGISTRO` para `interpretacao de texto - lucas` (nao bloqueante e sem relacao com o lote de Arte) |
+| ObservaÃ§Ãµes | **Primeira validacao real do Plano B em producao**: workbook anual, selecao por `--aba`, derivacao de `Turma/Trimestre`, resolucao de IDs e POST real funcionando para o 2o ano. O caso `2A` permanece pendente por configuracao de sistema avaliativo no iScholar; o proximo teste alvo apos regularizacao e `2A_T1 / Matematica Frente A` com 2â€“3 alunos para fechar a validacao da desambiguacao de professor. |
 | Bugs corrigidos nesta execução | **Bug 1:** `ischolar_client.py` declarava `sucesso=True` para HTTP 200 com `{"status":"erro"}` no corpo — corrigido: agora inspeciona o corpo e retorna `sucesso=False` + `erro_categoria="negocio"`. **Bug 2:** `mapa_professores.json` não tinha a chave `"arte"` (wide_format_adapter produz chave sem sufixo de professor para Frente Única) — corrigido: adicionados aliases `"arte": 96`, `"biologia": 61`, `"sociologia": 49`, `"filosofia": 49`. |
 | Warnings presentes | ⚠️ `PROFESSOR_NAO_ENCONTRADO_REGISTRO` para arte, biologia, fisica a, fisica b, fisica c — avisos de validação (estágio 1-5) contra registro oficial Madan 2026. Não bloquearam o envio. Professor foi resolvido corretamente na etapa 8 via `mapa_professores.json`. A investigar: de onde vem esse registro oficial e como atualizá-lo. |
 | Observações | Primeira execução real bem-sucedida após correção dos dois bugs críticos de homologação. |
