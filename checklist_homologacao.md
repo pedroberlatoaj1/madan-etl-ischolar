@@ -440,6 +440,26 @@ Resolucao automatica por turma ja implementada e testada unitariamente:
 
 ---
 
+### Execução 007 — Plano B: Piloto 2B_T2 via CLI (multi-frente, aba anual)
+
+| Campo | Valor |
+|-------|-------|
+| Data | 2026-04-08 |
+| Ambiente | produção (iScholar real) |
+| Planilha | `madan_2026_anual.xlsx` — aba `2B_T2` |
+| Disciplinas testadas | Geografia Frente B + Educação Física Frente Única |
+| Alunos | turma 2B — lote real |
+| Operador / aprovador | Pedro |
+| Resultado Geografia — Frente B | ✅ POST real aceito — professor Moreto (id 165) resolvido corretamente via `_qualificar_chave_com_professor` |
+| Resultado Ed Física — Frente Única | ❌ `[professor_sem_mapeamento] 'educacao fisica - joao' (chave: 'educacao fisica joao') não encontrado em mapa_professores` |
+| Causa do erro Ed Física | `_apelido_slug` usa `prof.nome.split()[0]` = `"joao"` (João Paulo sem apelido definido). Chave gerada `"educacao fisica joao"` ausente no mapa. |
+| Correção aplicada | Adicionados 4 aliases em `mapa_professores.json`: `"educacao fisica - joao": 148`, `"educacao fisica joao": 148`, `"ed fisica - joao": 148`, `"ed fisica joao": 148` |
+| Risco de regressão | Zero — novas chaves adicionais, nenhuma removida, mesmo ID 148 já mapeado |
+| Próximo passo | Reenviar 2B_T2 Ed Física com o mapa corrigido para confirmar resolução |
+| Observações | Execução confirma que a estrutura de 193 colunas do Plano B está operacional. Desambiguação por professor funciona corretamente para multi-frente (GEO Frente B → Moreto). Falha de Ed Física é alias ausente no mapa — incidente do pipeline, não do iScholar. |
+
+---
+
 ### Template para próximas execuções
 
 | Campo | Valor |
