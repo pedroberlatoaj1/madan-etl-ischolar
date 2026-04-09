@@ -33,6 +33,7 @@ from pipeline_runner import (
     TemplateInvalidoError,
     executar_aprovacao_e_envio,
     executar_validacao,
+    listar_abas_xlsx,
     preparar_dependencias_envio,
 )
 from validacao_lote_store import ValidacaoLoteStore
@@ -204,6 +205,16 @@ def _parsear_args() -> argparse.Namespace:
     )
     parser.add_argument("--planilha", default=None, help="Caminho para o Excel ou CSV de notas.")
     parser.add_argument(
+        "--aba",
+        default=None,
+        dest="aba",
+        help=(
+            "Nome da aba a processar em workbooks multi-aba (ex: --aba 2A_T1). "
+            "Obrigatorio quando o .xlsx possui mais de uma aba. "
+            "Ignorado para CSV. Desnecessario em arquivos de aba unica."
+        ),
+    )
+    parser.add_argument(
         "--turma-dir",
         default=None,
         dest="turma_dir",
@@ -293,6 +304,7 @@ def main() -> None:
                 lote_id=args.lote_id,
                 entrada=planilha_entrada,
                 validation_store=validation_store,
+                sheet_name=getattr(args, "aba", None),
             )
         except (FileNotFoundError, ValueError, TemplateInvalidoError) as exc:
             _titulo("ERRO - Validacao da planilha")

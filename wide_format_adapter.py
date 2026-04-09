@@ -29,6 +29,7 @@ from madan_planilha_mapper import (
     CAN_TRIMESTRE,
     CAN_TURMA,
 )
+from professores_madan import buscar_professor_para_turma, ProfessorMadan
 
 
 # ---------------------------------------------------------------------------
@@ -155,6 +156,81 @@ def construir_frente_professor(disciplina: str, frente: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Desambiguação de professor por turma (2º ano e qualquer série)
+# ---------------------------------------------------------------------------
+
+def _apelido_slug(prof: ProfessorMadan) -> str:
+    """
+    Retorna a chave de apelido do professor normalizada (sem acentos, minúsculas).
+
+    Usa o ``apelido`` oficial se definido; caso contrário, usa o primeiro nome.
+
+    Exemplos:
+        Perrone (apelido="Perrone")  → "perrone"
+        Luan    (apelido=None)       → "luan"
+        Carioca (apelido="Carioca") → "carioca"
+    """
+    s = prof.apelido if prof.apelido else prof.nome.split()[0]
+    return _normalizar_texto(s)
+
+
+def _extrair_serie_letra(turma: Any) -> tuple[int, str] | None:
+    """
+    Extrai (série, letra) de uma string de turma.
+
+    Exemplos:
+        "2A"  → (2, "A")
+        "1B"  → (1, "B")
+        "10A" → None  (série > 9 não reconhecida)
+        ""    → None
+        None  → None
+    """
+    if turma is None:
+        return None
+    m = re.match(r"^([1-9])([A-Za-z])$", str(turma).strip())
+    if not m:
+        return None
+    return int(m.group(1)), m.group(2).upper()
+
+
+def _qualificar_chave_com_professor(
+    base_key: str,
+    disciplina: str,
+    serie: int,
+    letra: str,
+) -> str:
+    """
+    Tenta qualificar ``base_key`` com o professor responsável pela
+    disciplina na série/turma informada.
+
+    Regra:
+    - Se ``buscar_professor_para_turma`` retorna exatamente 1 professor →
+      retorna ``"{base_key} - {apelido_slug}"``.
+    - Se retorna 0 ou mais de 1 (ambíguo / não mapeado) → retorna ``base_key``
+      sem alteração (fail-safe conservador).
+
+    Exemplos:
+        ("matematica a", "Matemática", 2, "A") → "matematica a - daniel"
+        ("matematica a", "Matemática", 1, "A") → "matematica a - luan"
+        ("biologia",     "Biologia",   2, "A") → "biologia - perrone"
+        ("geografia a",  "Geografia",  2, "A") → "geografia a - carla"
+        ("fisica a",     "Física",     1, "A") → "fisica a - cavaco"
+    """
+    profs = buscar_professor_para_turma(disciplina, serie, letra)
+    if len(profs) != 1:
+        return base_key
+    return f"{base_key} - {_apelido_slug(profs[0])}"
+
+
+def _get_turma_do_row(row: dict[str, Any]) -> Any:
+    """Extrai o valor da coluna Turma do row dict (case-insensitive)."""
+    for k, v in row.items():
+        if str(k).strip().lower() == "turma":
+            return v
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Detecção de formato
 # ---------------------------------------------------------------------------
 
@@ -276,12 +352,25 @@ def despivotar_linha_wide(
     # Valores fixos (copiar para cada linha virtual)
     valores_fixos = {col: row.get(col) for col in colunas_fixas}
 
+    # Contexto de turma para desambiguação de professor
+    turma_raw = _get_turma_do_row(row)
+    serie_letra = _extrair_serie_letra(turma_raw)
+
     linhas_virtuais: list[dict[str, Any]] = []
 
     for (disciplina, frente), cols_dinamicas in grupos_dinamicos.items():
         linha = dict(valores_fixos)
         linha["Disciplina"] = disciplina
-        linha["Frente - Professor"] = construir_frente_professor(disciplina, frente)
+
+        base_key = construir_frente_professor(disciplina, frente)
+        if serie_letra is not None:
+            serie, letra = serie_letra
+            chave_professor = _qualificar_chave_com_professor(
+                base_key, disciplina, serie, letra
+            )
+        else:
+            chave_professor = base_key
+        linha["Frente - Professor"] = chave_professor
 
         for col_din in cols_dinamicas:
             nome_antigo = mapear_tipo_avaliacao(col_din.tipo_avaliacao)
@@ -335,4 +424,8 @@ __all__ = [
     "FORMATO_SEMI_WIDE_ANTIGO",
     "COLUNAS_FIXAS_WIDE_NOVO",
     "MAPA_TIPO_AVALIACAO",
+    # desambiguação por turma
+    "_apelido_slug",
+    "_extrair_serie_letra",
+    "_qualificar_chave_com_professor",
 ]

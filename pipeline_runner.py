@@ -168,7 +168,157 @@ def _calcular_snapshot_hash(df: pd.DataFrame) -> str:
     return sha256_dataframe_normalizado(df_norm.fillna(""), sort_by_columns=sort_by)
 
 
-def carregar_entrada(entrada: str | os.PathLike[str] | pd.DataFrame) -> pd.DataFrame:
+def listar_abas_xlsx(caminho: str | os.PathLike[str]) -> list[str]:
+    """
+    Retorna a lista de nomes de abas de um arquivo .xlsx/.xls.
+    Para outros formatos retorna lista vazia.
+    Nao carrega os dados — apenas inspeciona o índice.
+    """
+    p = Path(caminho)
+    if p.suffix.lower() not in (".xlsx", ".xls"):
+        return []
+    xl = pd.ExcelFile(str(p))
+    return list(xl.sheet_names)
+
+
+# Padrão reconhecido: <TURMA>_<TRIMESTRE>  ex: 2A_T1, 1B_T3
+_RE_NOME_ABA_ANUAL = re.compile(
+    r"^(?P<turma>[1-9][A-Za-z])_(?P<trimestre>T[1-3])$",
+    re.IGNORECASE,
+)
+
+
+def parsear_nome_aba(nome_aba: str) -> Optional[tuple[str, str]]:
+    """
+    Tenta extrair (turma, trimestre) do nome da aba no padrão Plano B.
+
+    Padrão reconhecido: ``<SERIE><LETRA>_T<N>``  (ex: 2A_T1, 1B_T3)
+    Retorna None se o nome não seguir o padrão (aba legada ou nome livre).
+
+    Exemplos:
+        "2A_T1" → ("2A", "T1")
+        "1B_T3" → ("1B", "T3")
+        "Notas"  → None
+        "Sheet1" → None
+    """
+    if not nome_aba:
+        return None
+    m = _RE_NOME_ABA_ANUAL.match(nome_aba.strip())
+    if m is None:
+        return None
+    turma = m.group("turma").upper()
+    trimestre = m.group("trimestre").upper()
+    return turma, trimestre
+
+
+def aplicar_contexto_aba(
+    df: pd.DataFrame,
+    nome_aba: Optional[str],
+) -> pd.DataFrame:
+    """
+    Deriva e injeta ``Turma`` e ``Trimestre`` a partir do nome da aba (Plano B).
+
+    Comportamento por caso:
+
+    1. ``nome_aba`` é None ou não segue o padrão → retorna df intocado
+       (retrocompatibilidade total com planilhas legadas e CSVs).
+
+    2. Coluna ausente no df → cria-a com o valor derivado da aba.
+
+    3. Coluna presente com valor vazio ou NaN → preenche com o valor da aba.
+
+    4. Coluna presente com valor divergente da aba → ``TemplateInvalidoError``
+       explícito indicando linha, coluna, valor encontrado e valor esperado.
+
+    5. Coluna presente com valor coerente → mantém intocado (sem reescrita).
+
+    Rastreabilidade:
+        Todas as derivações são registradas via log.info com o nome da aba e
+        o valor aplicado, garantindo auditabilidade sem custo operacional.
+    """
+    ctx = parsear_nome_aba(nome_aba) if nome_aba else None
+    if ctx is None:
+        if nome_aba:
+            log.debug(
+                "Nome de aba '%s' nao segue padrao Plano B (TURMA_T<N>); "
+                "Turma/Trimestre nao serao derivados automaticamente.", nome_aba
+            )
+        return df
+
+    turma_aba, trimestre_aba = ctx
+    df = df.copy()
+
+    for col_canonical, valor_aba in (("Turma", turma_aba), ("Trimestre", trimestre_aba)):
+        # Detecta a coluna no df (case-insensitive)
+        col_real: Optional[str] = None
+        for c in df.columns:
+            if str(c).strip().lower() == col_canonical.lower():
+                col_real = c
+                break
+
+        if col_real is None:
+            # Coluna ausente → cria
+            df[col_canonical] = valor_aba
+            log.info(
+                "Contexto aba '%s': coluna '%s' ausente — criada com valor '%s'.",
+                nome_aba, col_canonical, valor_aba,
+            )
+            continue
+
+        # Coluna presente — verifica conflito linha a linha
+        conflitos: list[str] = []
+        for idx, val in df[col_real].items():
+            val_str = str(val).strip() if (val is not None and not _is_nan(val)) else ""
+            if val_str == "":
+                df.at[idx, col_real] = valor_aba
+            elif val_str.upper() != valor_aba.upper():
+                conflitos.append(
+                    f"  linha {int(idx) + 2}: encontrado '{val_str}', esperado '{valor_aba}'"
+                )
+
+        if conflitos:
+            raise TemplateInvalidoError(
+                f"Conflito entre aba '{nome_aba}' e coluna '{col_real}' na planilha. "
+                f"A aba indica {col_canonical}='{valor_aba}' mas as linhas abaixo divergem:\n"
+                + "\n".join(conflitos[:10])
+                + ("\n  ..." if len(conflitos) > 10 else "")
+            )
+
+        n_preenchidos = (df[col_real] == valor_aba).sum()
+        log.info(
+            "Contexto aba '%s': '%s' derivado como '%s' (%d linha(s) preenchidas/confirmadas).",
+            nome_aba, col_canonical, valor_aba, n_preenchidos,
+        )
+
+    return df
+
+
+def _is_nan(val: Any) -> bool:
+    """Retorna True se val for float NaN (sem importar math)."""
+    try:
+        return val != val  # NaN é o único valor onde isso é True
+    except Exception:
+        return False
+
+
+def carregar_entrada(
+    entrada: str | os.PathLike[str] | pd.DataFrame,
+    sheet_name: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Carrega planilha de entrada para o pipeline.
+
+    Parâmetros:
+        entrada    : caminho do arquivo (.xlsx/.xls/.csv) ou DataFrame já carregado
+        sheet_name : nome da aba a ler (somente para .xlsx/.xls)
+                     - None + arquivo de aba única → lê a primeira aba (comportamento original)
+                     - None + arquivo multi-aba   → lança TemplateInvalidoError listando as abas
+                     - str                        → lê exatamente essa aba; erro explícito se não existir
+
+    Retrocompatibilidade garantida:
+        Arquivos com aba única continuam funcionando sem sheet_name.
+        DataFrames continuam aceitos sem alteração.
+    """
     if isinstance(entrada, pd.DataFrame):
         df = entrada.copy()
         return df.dropna(how="all").reset_index(drop=True)
@@ -179,18 +329,47 @@ def carregar_entrada(entrada: str | os.PathLike[str] | pd.DataFrame) -> pd.DataF
 
     ext = caminho.suffix.lower()
     if ext in (".xlsx", ".xls"):
-        df = pd.read_excel(caminho, dtype=str, header=0)
+        abas = listar_abas_xlsx(caminho)
+
+        # Resolve qual aba ler
+        if sheet_name is not None:
+            # Seleção explícita — valida existência
+            if sheet_name not in abas:
+                raise TemplateInvalidoError(
+                    f"Aba '{sheet_name}' nao encontrada no arquivo '{caminho.name}'. "
+                    f"Abas disponiveis: {abas}"
+                )
+            aba_efetiva: str | int = sheet_name
+            log.info("Multi-aba: lendo aba '%s' de '%s' (%d abas no total).",
+                     sheet_name, caminho.name, len(abas))
+        elif len(abas) > 1:
+            # Workbook multi-aba sem seleção explícita → erro seguro
+            raise TemplateInvalidoError(
+                f"O arquivo '{caminho.name}' possui {len(abas)} abas: {abas}. "
+                "Use --aba <nome> para selecionar explicitamente a aba a processar. "
+                "Exemplo: --aba 2A_T1"
+            )
+        else:
+            # Aba única — comportamento original
+            aba_efetiva = 0
+
+        df = pd.read_excel(caminho, dtype=str, header=0, sheet_name=aba_efetiva)
         colunas_esperadas = {"estudante", "ra", "turma", "trimestre", "disciplina"}
         colunas_norm = {str(c).strip().lower() for c in df.columns if isinstance(c, str)}
         if not colunas_esperadas.intersection(colunas_norm):
             log.info("Header da linha 1 sem colunas esperadas; tentando header=1.")
-            df = pd.read_excel(caminho, dtype=str, header=1)
+            df = pd.read_excel(caminho, dtype=str, header=1, sheet_name=aba_efetiva)
     elif ext == ".csv":
+        if sheet_name is not None:
+            log.warning("--aba ignorado para arquivos CSV: '%s'.", caminho.name)
         df = pd.read_csv(caminho, dtype=str, sep=None, engine="python")
     else:
         raise ValueError(f"Extensao nao suportada: {ext}. Use .xlsx, .xls ou .csv.")
 
-    return df.dropna(how="all").reset_index(drop=True)
+    df = df.dropna(how="all").reset_index(drop=True)
+    # Injeta Turma/Trimestre a partir do nome da aba (Plano B — idempotente para legado)
+    df = aplicar_contexto_aba(df, sheet_name)
+    return df
 
 
 def preparar_dataframe_pipeline(df: pd.DataFrame) -> tuple[pd.DataFrame, str]:
@@ -712,8 +891,9 @@ def executar_validacao(
     snapshot_hash: Optional[str] = None,
     versao: int = 1,
     expires_at: Optional[str] = None,
+    sheet_name: Optional[str] = None,
 ) -> dict[str, Any]:
-    df_original = carregar_entrada(entrada)
+    df_original = carregar_entrada(entrada, sheet_name=sheet_name)
     snapshot_hash_final = snapshot_hash or _calcular_snapshot_hash(df_original)
     df_pipeline, formato = preparar_dataframe_pipeline(df_original)
     resultados_validacao = processar_validacao(df_pipeline)

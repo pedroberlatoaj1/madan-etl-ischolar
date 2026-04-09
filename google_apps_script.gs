@@ -26,14 +26,21 @@
 // Campos que devem ser preenchidos manualmente na instância implantada:
 //   API_BASE_URL    → URL pública HTTPS do túnel ngrok (muda a cada reinício)
 //   WEBHOOK_SECRET  → valor do campo WEBHOOK_SECRET no arquivo .env do backend
-//   NOME_ABA_NOTAS  → nome exato da aba na planilha Google Sheets (padrão: "Notas")
+//
+// Nota — Plano B (workbook anual multi-aba):
+//   O script usa SEMPRE a aba ativa no momento do clique. Não há mais constante
+//   NOME_ABA_NOTAS. Navegue até a aba desejada (ex: "2A_T1") ANTES de clicar
+//   em "Validar Lote", "Dry Run" ou "Aprovar e Enviar".
+//   Um diálogo de confirmação exibe o nome da aba a processar antes de prosseguir.
 //
 // Qualquer mudança ESTRUTURAL neste arquivo (nova função, novo endpoint, nova lógica)
 // deve ser refletida no repositório. Valores sensíveis nunca devem ser commitados.
 // ---------------------------------------------------------------------------
 const API_BASE_URL = "https://sua-api.com";
 const WEBHOOK_SECRET = "troque_por_um_segredo_forte_em_producao";
-const NOME_ABA_NOTAS = "Notas";
+
+// Padrão reconhecido como aba trimestral Plano B: ex. "2A_T1", "1B_T3"
+var REGEX_ABA_PLANO_B = /^([1-9][A-Za-z])_(T[123])$/i;
 
 const POLL_INTERVAL_MS = 5000;
 const POLL_TENTATIVAS_VALIDACAO = 8;
@@ -61,7 +68,8 @@ function onOpen() {
 function menuValidarLote() {
   executarAcaoComTratamento_(function() {
     garantirBackendDisponivel_("validar o lote");
-    var aba = obterAbaNotas_();
+    var aba = obterAbaAtiva_();
+    confirmarProcessamentoAba_(aba);
     var payload = montarPayloadValidacao_(aba);
     var resposta = chamarApi_("post", "/webhook/notas", payload);
 
@@ -223,13 +231,57 @@ function executarAcaoComTratamento_(fn) {
   }
 }
 
-function obterAbaNotas_() {
+function obterAbaAtiva_() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var aba = ss.getSheetByName(NOME_ABA_NOTAS);
+  var aba = ss.getActiveSheet();
   if (!aba) {
-    throw new Error("Aba '" + NOME_ABA_NOTAS + "' nao encontrada na planilha atual.");
+    throw new Error(
+      "Nao foi possivel determinar a aba ativa. " +
+      "Clique em uma aba da planilha antes de usar o menu iScholar ETL."
+    );
   }
   return aba;
+}
+
+/**
+ * Interpreta o nome da aba como aba trimestral Plano B.
+ * Retorna { turma, trimestre } se o nome seguir o padrao, null caso contrario.
+ * Ex: "2A_T1" -> { turma: "2A", trimestre: "T1" }
+ */
+function _interpretarNomeAba_(nomeAba) {
+  var m = REGEX_ABA_PLANO_B.exec((nomeAba || "").trim());
+  if (!m) { return null; }
+  return { turma: m[1].toUpperCase(), trimestre: m[2].toUpperCase() };
+}
+
+/**
+ * Exibe dialogo de confirmacao mostrando qual aba sera processada.
+ * Para abas Plano B exibe turma e trimestre explicitamente.
+ * O operador pode cancelar se estiver na aba errada.
+ */
+function confirmarProcessamentoAba_(aba) {
+  var nomeAba = aba.getName();
+  var info = _interpretarNomeAba_(nomeAba);
+  var linhas;
+  if (info) {
+    linhas = [
+      "Aba:       " + nomeAba,
+      "Turma:     " + info.turma,
+      "Trimestre: " + info.trimestre,
+      "",
+      "Prosseguir com esta aba?"
+    ];
+  } else {
+    linhas = [
+      "Aba: " + nomeAba,
+      "",
+      "Esta aba nao segue o padrao Plano B (ex: 2A_T1).",
+      "Verifique se voce esta na aba correta.",
+      "",
+      "Prosseguir mesmo assim?"
+    ];
+  }
+  confirmarAcao_("Confirmar aba a processar", linhas.join("\n"));
 }
 
 function montarPayloadValidacao_(aba) {

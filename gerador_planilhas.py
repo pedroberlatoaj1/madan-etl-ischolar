@@ -1,16 +1,30 @@
 """
 gerador_planilhas.py — Gera planilhas Excel no formato wide (1 linha por aluno).
 
-Gera 1 arquivo por turma com uma única aba "Notas":
-- 4 colunas fixas pré-preenchidas: Estudante, RA, Turma, Trimestre
-- Colunas dinâmicas por (disciplina, frente, tipo de avaliação):
-      "{Disciplina} - Frente {X} - {Tipo}"
-  ex: "Matemática - Frente A - AV 1 Obj"
+MODO PADRÃO (por turma):
+    Gera 1 arquivo por turma com uma única aba "Notas":
+    - 4 colunas fixas pré-preenchidas: Estudante, RA, Turma, Trimestre
+    - Colunas dinâmicas por (disciplina, frente, tipo de avaliação):
+          "{Disciplina} - Frente {X} - {Tipo}"
+      ex: "Matemática - Frente A - AV 1 Obj"
+
+    Uso:
+        python gerador_planilhas.py --trimestre T1 --ano 2026 --alunos roster.csv --output ./planilhas/
+
+MODO ANUAL (workbook único — Plano B):
+    Gera 1 workbook com 12 abas trimestrais:
+        1A_T1, 1A_T2, 1A_T3
+        1B_T1, 1B_T2, 1B_T3
+        2A_T1, 2A_T2, 2A_T3
+        2B_T1, 2B_T2, 2B_T3
+
+    Cada aba tem o mesmo formato wide homologado.
+    O pedagógico usa 1 arquivo por ano; o pipeline processa 1 aba por vez.
+
+    Uso:
+        python gerador_planilhas.py --anual --ano 2026 --alunos roster.csv --output ./planilhas/
 
 O output é consumido diretamente pelo wide_format_adapter.py no pipeline ETL.
-
-Uso:
-    python gerador_planilhas.py --trimestre T1 --ano 2026 --alunos roster.csv --output ./planilhas/
 """
 
 from __future__ import annotations
@@ -326,13 +340,17 @@ def _criar_aba_notas_wide(
     alunos: list[Aluno],
     turma: str,
     trimestre: str,
+    titulo: str = "Notas",
 ) -> None:
     """
-    Cria a aba "Notas" no formato wide:
+    Cria uma aba no formato wide:
     - Linha 1: cabeçalho completo
     - Linhas 2+: 1 aluno por linha, colunas fixas pré-preenchidas, notas em branco
+
+    O parâmetro `titulo` define o nome da aba (default "Notas" para modo por turma;
+    no modo anual recebe "1A_T1", "2B_T3", etc.).
     """
-    ws = wb.create_sheet(title="Notas")
+    ws = wb.create_sheet(title=titulo)
     n_fixas = len(COLUNAS_FIXAS_WIDE)
 
     # --- Cabeçalho ---
@@ -463,32 +481,175 @@ def gerar_todas_planilhas(
 
 
 # ---------------------------------------------------------------------------
+# Modo Anual (Plano B) — workbook único com 12 abas trimestrais
+# ---------------------------------------------------------------------------
+
+#: Turmas suportadas no workbook anual, em ordem de exibição.
+TURMAS_ANUAIS: list[str] = ["1A", "1B", "2A", "2B"]
+
+#: Trimestres em ordem cronológica.
+TRIMESTRES: list[str] = ["T1", "T2", "T3"]
+
+
+def gerar_workbook_anual(
+    ano: int,
+    alunos_por_turma: dict[str, list[Aluno]],
+    output_dir: str | Path,
+    turmas: list[str] | None = None,
+    trimestres: list[str] | None = None,
+) -> Path:
+    """
+    Gera um único workbook anual com N abas trimestrais no formato wide.
+
+    Estrutura de abas gerada (padrão):
+        1A_T1, 1A_T2, 1A_T3,
+        1B_T1, 1B_T2, 1B_T3,
+        2A_T1, 2A_T2, 2A_T3,
+        2B_T1, 2B_T2, 2B_T3
+
+    Cada aba tem o mesmo formato wide homologado de `gerar_planilha_turma`:
+    - Linha 1: cabeçalho completo (colunas fixas + dinâmicas por disciplina/frente/tipo)
+    - Linhas 2+: 1 aluno por linha, colunas fixas pré-preenchidas, notas em branco
+    - Freeze em E2 (cabeçalho + 4 colunas fixas)
+
+    O pipeline processa 1 aba por vez — compatível com wide_format_adapter.py.
+
+    Parâmetros:
+        ano              : Ano letivo (ex: 2026)
+        alunos_por_turma : dict {turma → lista de Aluno}; turmas ausentes → aba sem alunos
+        output_dir       : Diretório de saída
+        turmas           : Quais turmas incluir (default: TURMAS_ANUAIS = 1A,1B,2A,2B)
+        trimestres       : Quais trimestres incluir (default: TRIMESTRES = T1,T2,T3)
+
+    Retorna o caminho do arquivo gerado.
+    """
+    turmas_efetivas = [t.upper() for t in (turmas or TURMAS_ANUAIS)]
+    trimestres_efetivos = [t.upper() for t in (trimestres or TRIMESTRES)]
+
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    wb = openpyxl.Workbook()
+    default = wb.active
+    if default is not None:
+        wb.remove(default)
+
+    abas_geradas: list[str] = []
+
+    for turma in turmas_efetivas:
+        # Extrai série e letra da turma (ex: "1A" → serie=1, letra="A")
+        serie = extrair_serie_da_turma(turma)
+        if serie is None or serie not in SERIES_SUPORTADAS:
+            continue
+
+        turma_letra = ""
+        for c in turma:
+            if c.isalpha():
+                turma_letra = c.upper()
+                break
+        if not turma_letra:
+            continue
+
+        grupos = descobrir_grupos_wide(serie, turma_letra)
+        if not grupos:
+            continue
+
+        cabecalho = construir_cabecalho_wide(grupos)
+        alunos_turma = alunos_por_turma.get(turma, [])
+
+        for trimestre in trimestres_efetivos:
+            titulo_aba = f"{turma}_{trimestre}"          # ex: "1A_T1"
+            _criar_aba_notas_wide(
+                wb=wb,
+                cabecalho=cabecalho,
+                alunos=alunos_turma,
+                turma=turma,
+                trimestre=trimestre,
+                titulo=titulo_aba,
+            )
+            abas_geradas.append(titulo_aba)
+
+    if not abas_geradas:
+        raise ValueError(
+            "Nenhuma aba foi gerada. Verifique se as turmas são suportadas "
+            f"({SERIES_SUPORTADAS}) e se os grupos foram descobertos."
+        )
+
+    filename = f"madan_{ano}_anual.xlsx"
+    filepath = output_path / filename
+    wb.save(str(filepath))
+
+    return filepath
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Gera planilhas Excel no formato wide por turma."
+        description=(
+            "Gera planilhas Excel no formato wide.\n"
+            "Modo padrão: 1 arquivo por turma/trimestre.\n"
+            "Modo anual (--anual): 1 workbook com 12 abas trimestrais (Plano B)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--trimestre", required=True, help="Trimestre (T1, T2, T3)")
     parser.add_argument("--ano", type=int, required=True, help="Ano letivo (ex: 2026)")
     parser.add_argument("--alunos", required=True, help="Caminho do CSV com roster de alunos")
     parser.add_argument("--output", default="./planilhas", help="Diretório de saída")
+
+    # Modo padrão: trimestre obrigatório
+    parser.add_argument(
+        "--trimestre",
+        default=None,
+        help="Trimestre (T1, T2, T3) — obrigatório no modo padrão, ignorado com --anual",
+    )
+
+    # Modo anual
+    parser.add_argument(
+        "--anual",
+        action="store_true",
+        default=False,
+        help=(
+            "Gera workbook anual único com 12 abas (1A_T1 … 2B_T3). "
+            "Não requer --trimestre."
+        ),
+    )
+
     args = parser.parse_args()
 
     alunos = carregar_roster_csv(args.alunos)
     print(f"Roster carregado: {len(alunos)} alunos")
 
-    arquivos = gerar_todas_planilhas(
-        trimestre=args.trimestre.upper(),
-        ano=args.ano,
-        alunos=alunos,
-        output_dir=args.output,
-    )
+    if args.anual:
+        # --- Modo anual (Plano B) ---
+        alunos_por_turma = agrupar_alunos_por_turma(alunos)
+        filepath = gerar_workbook_anual(
+            ano=args.ano,
+            alunos_por_turma=alunos_por_turma,
+            output_dir=args.output,
+        )
+        print(f"\nWorkbook anual gerado:")
+        print(f"  {filepath}")
+        n_abas = len(TURMAS_ANUAIS) * len(TRIMESTRES)
+        print(f"  {n_abas} abas: {', '.join(f'{t}_{tr}' for t in TURMAS_ANUAIS for tr in TRIMESTRES)}")
 
-    print(f"\n{len(arquivos)} planilha(s) gerada(s):")
-    for arq in arquivos:
-        print(f"  {arq}")
+    else:
+        # --- Modo padrão: por turma/trimestre ---
+        if not args.trimestre:
+            parser.error("--trimestre é obrigatório no modo padrão (ou use --anual)")
+
+        arquivos = gerar_todas_planilhas(
+            trimestre=args.trimestre.upper(),
+            ano=args.ano,
+            alunos=alunos,
+            output_dir=args.output,
+        )
+
+        print(f"\n{len(arquivos)} planilha(s) gerada(s):")
+        for arq in arquivos:
+            print(f"  {arq}")
 
 
 if __name__ == "__main__":

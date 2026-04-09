@@ -554,7 +554,7 @@ def validar_professor_disciplina_turma(
     }
 
     prof = buscar_por_nome_ou_apelido(nome_professor)
-    if not prof:
+    if prof is None or prof is False:
         resultado["problemas"].append(
             f"Professor '{nome_professor}' não encontrado no registro Madan 2026."
         )
