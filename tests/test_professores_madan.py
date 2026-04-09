@@ -106,6 +106,24 @@ class TestBuscaProfessor:
         # Luan Schunck leciona MAT 1ª A
         assert any("LUAN" in p.nome for p in profs)
 
+    def test_busca_professor_para_turma_biologia_2a_pdf(self):
+        profs = buscar_professor_para_turma("biologia", 2, "A")
+        nomes = [p.nome for p in profs]
+        assert any("PERRONE" in n for n in nomes)
+        assert not any("JAMINE" in n for n in nomes)
+
+    def test_busca_professor_para_turma_redacao_2a_pdf(self):
+        profs = buscar_professor_para_turma("redacao", 2, "A")
+        nomes = [p.nome for p in profs]
+        assert any("GOMES DA SILVA JUNIOR" in n for n in nomes)
+        assert not any("EMANUELLY" in n for n in nomes)
+
+    def test_busca_professor_para_turma_literatura_2a_pdf(self):
+        profs = buscar_professor_para_turma("literatura", 2, "A")
+        nomes = [p.nome for p in profs]
+        assert any("IANA" in n for n in nomes)
+        assert not any("JANAINA" in n for n in nomes)
+
 
 # ---------------------------------------------------------------------------
 # ProfessorMadan — métodos
@@ -180,6 +198,18 @@ class TestValidacaoCruzada:
             res = validar_professor_disciplina_turma("Bravin", disc, 1, "A")
             assert res["professor_encontrado"] is True
             assert res["disciplina_compativel"] is True, f"Bravin deveria ser compatível com {disc}"
+
+    def test_professor_disciplina_turma_perrone_2a_pdf(self):
+        res = validar_professor_disciplina_turma("Perrone", "biologia", 2, "A")
+        assert res["professor_encontrado"] is True
+        assert res["disciplina_compativel"] is True
+        assert res["turma_compativel"] is True
+
+    def test_professor_disciplina_turma_sergio_2a_pdf(self):
+        res = validar_professor_disciplina_turma("Sergio", "redacao", 2, "A")
+        assert res["professor_encontrado"] is True
+        assert res["disciplina_compativel"] is True
+        assert res["turma_compativel"] is True
 
 
 # ---------------------------------------------------------------------------

@@ -642,6 +642,34 @@ def test_frente_unica_sem_alias_no_mapa_e_obrigatorio_bloqueia():
     assert "professor_sem_mapeamento" in resultado.rastreabilidade["categorias_erro"]
 
 
+@pytest.mark.parametrize(
+    ("frente_professor", "id_professor"),
+    [
+        ("Matemática A - Daniel", 66),
+        ("Matemática B - Luan", 71),
+        ("Matemática C - Carioca", 57),
+        ("Biologia A - Perrone", 86),
+        ("Geografia A - Carla", 72),
+        ("Geografia B - Moreto", 165),
+    ],
+)
+def test_mapa_repo_tem_alias_explicito_2o_ano(frente_professor: str, id_professor: int):
+    from pathlib import Path
+
+    mapa = carregar_mapa_professores(
+        Path(__file__).resolve().parents[1] / "mapa_professores.json"
+    )
+    r, _ = _resolvedor(
+        mapa_prof=mapa,
+        professor_obrigatorio=True,
+    )
+
+    resultado = r.resolver_ids(_lancamento(frente_professor=frente_professor))
+
+    assert resultado.id_professor == id_professor
+    assert resultado.resolvido
+
+
 # ---------------------------------------------------------------------------
 # 10. Fluxo de envio novo usando resolvedor híbrido em dry_run
 # ---------------------------------------------------------------------------

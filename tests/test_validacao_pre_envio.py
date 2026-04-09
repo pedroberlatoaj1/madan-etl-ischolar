@@ -436,6 +436,36 @@ def test_nome_explicito_ou_apelido_valido_nao_e_suprimido_nem_gera_warning_falso
     ), f"Professor valido '{frente_professor}' foi tratado como incompatível: {res['avisos']}"
 
 
+@pytest.mark.parametrize(
+    ("frente_professor", "disciplina", "turma"),
+    [
+        ("matematica a - daniel", "Matematica", "2A"),
+        ("biologia a - perrone", "Biologia", "2A"),
+        ("geografia a - carla", "Geografia", "2A"),
+        ("redacao - sergio", "Redacao", "2A"),
+    ],
+)
+def test_alias_explicito_2o_ano_nao_gera_warning_falso(
+    frente_professor: str,
+    disciplina: str,
+    turma: str,
+):
+    res = _validar_com_frente_professor(
+        frente_professor,
+        disciplina=disciplina,
+        turma=turma,
+    )
+
+    assert not any(
+        aviso["code"] == "PROFESSOR_NAO_ENCONTRADO_REGISTRO"
+        for aviso in res["avisos"]
+    ), f"Alias explicito '{frente_professor}' gerou warning de lookup: {res['avisos']}"
+    assert not any(
+        aviso["code"] == "PROFESSOR_DISCIPLINA_TURMA_INCOMPATIVEL"
+        for aviso in res["avisos"]
+    ), f"Alias explicito '{frente_professor}' foi tratado como incompatível: {res['avisos']}"
+
+
 # ---------------------------------------------------------------------------
 # Regressao: nome explicito invalido continua gerando warning legitimo
 # ---------------------------------------------------------------------------

@@ -288,8 +288,9 @@ class TestDespivotar:
         assert "Física" in discs
 
         frentes = {l["Frente - Professor"] for l in linhas}
-        assert "matematica a" in frentes
-        assert "fisica" in frentes  # frente única → só disciplina
+        # Turma=1A → qualificado com professor (chaves existem no mapa_professores.json)
+        assert "matematica a - luan" in frentes
+        assert "fisica - cavaco" in frentes  # frente única qualificada com Cavaco (1A)
 
     def test_notas_mapeadas_para_colunas_antigas(self):
         row, fixas, grupos = self._make_row_and_groups()
@@ -380,7 +381,8 @@ class TestDespivorarDataFrame:
         assert len(resultado) == 3
 
         frentes = sorted(resultado["Frente - Professor"].tolist())
-        assert frentes == ["matematica a", "matematica b", "matematica c"]
+        # Turma=1A → 1 professor de MAT na turma (Luan) → todas as frentes qualificadas com "luan"
+        assert frentes == ["matematica a - luan", "matematica b - luan", "matematica c - luan"]
 
     def test_dataframe_sem_colunas_dinamicas_levanta_erro(self):
         df = pd.DataFrame({
@@ -406,7 +408,7 @@ class TestDespivorarDataFrame:
         assert len(resultado) == 1
         row = resultado.iloc[0]
         assert row["Disciplina"] == "Química"
-        assert row["Frente - Professor"] == "quimica a"
+        assert row["Frente - Professor"] == "quimica a - leo"  # Turma=1A → Leo
         assert row["AV 2 (OBJ)"] == 4.5
         assert row["AV 2 (DISC)"] == 3.5
         assert row["Simulado"] == 7.0
@@ -513,7 +515,7 @@ class TestIntegracaoComTransformador:
             lancs = linha_madan_para_lancamentos(row.to_dict(), linha_origem=0)
             todos_lancamentos.extend(lancs)
 
-        # Deve ter lançamentos de ambas as frentes
+        # Deve ter lançamentos de ambas as frentes (Turma=1A → qualificado com Luan)
         frentes = {l.get("frente_professor") for l in todos_lancamentos}
-        assert "matematica a" in frentes
-        assert "matematica b" in frentes
+        assert "matematica a - luan" in frentes
+        assert "matematica b - luan" in frentes

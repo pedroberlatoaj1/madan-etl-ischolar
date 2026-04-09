@@ -419,3 +419,99 @@ def test_get_job_status_expoe_finalizado_para_polling(client):
     assert job["job_type"] == JobType.GOOGLE_SHEETS_VALIDATION
     assert job["finalizado"] is False
     assert job["mensagem"]
+
+
+# ---------------------------------------------------------------------------
+# Plano B — sheet_name como nome de aba trimestral (ex: "2A_T1")
+# ---------------------------------------------------------------------------
+
+def _payload_plano_b(turma: str = "2A", trimestre: str = "T1") -> dict:
+    """Payload simulando aba ativa Plano B enviada pelo Apps Script."""
+    nome_aba = f"{turma}_{trimestre}"
+    return {
+        "spreadsheet_id": "spreadsheet-planob",
+        "sheet_name": nome_aba,
+        "lote_id": f"spreadsheet-planob/{nome_aba}",
+        "dados": [
+            {
+                "Estudante": "Carlos Madan",
+                "RA": "RA999",
+                "Turma": turma,
+                "Trimestre": trimestre,
+                "Matemática - Frente A - AV 1 Obj": "7",
+                "Matemática - Frente A - AV 1 Disc": "6",
+            }
+        ],
+    }
+
+
+def test_plano_b_sheet_name_2a_t1_aceito(client):
+    """sheet_name no padrão Plano B deve ser aceito com 202."""
+    resp = client.post("/webhook/notas", json=_payload_plano_b("2A", "T1"), headers=_headers())
+    assert resp.status_code == 202
+    body = resp.get_json()
+    assert body["status"] == "accepted"
+    assert body["lote_id"] == "spreadsheet-planob/2A_T1"
+
+
+def test_plano_b_sheet_name_1b_t2_aceito(client):
+    resp = client.post("/webhook/notas", json=_payload_plano_b("1B", "T2"), headers=_headers())
+    assert resp.status_code == 202
+    body = resp.get_json()
+    assert body["lote_id"] == "spreadsheet-planob/1B_T2"
+
+
+def test_plano_b_sheet_name_2b_t3_aceito(client):
+    resp = client.post("/webhook/notas", json=_payload_plano_b("2B", "T3"), headers=_headers())
+    assert resp.status_code == 202
+    body = resp.get_json()
+    assert body["lote_id"] == "spreadsheet-planob/2B_T3"
+
+
+def test_plano_b_lote_id_contem_nome_aba(client):
+    """lote_id deve incluir o nome da aba para isolar lotes por turma/trimestre."""
+    resp = client.post("/webhook/notas", json=_payload_plano_b("2A", "T1"), headers=_headers())
+    body = resp.get_json()
+    assert "2A_T1" in body["lote_id"]
+    assert "2A_T1" in body["polling"]["endpoint"]
+
+
+def test_plano_b_validacao_polling_retorna_lote_correto(client, app):
+    """GET /lote/{id}/validacao deve encontrar o lote criado com nome de aba Plano B."""
+    lote_id = "spreadsheet-planob/2A_T1"
+    client.post("/webhook/notas", json=_payload_plano_b("2A", "T1"), headers=_headers())
+
+    resp = client.get(f"/lote/{lote_id}/validacao", headers=_headers())
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["lote_id"] == lote_id
+    assert body["status"] == STATUS_VALIDATION_JOB_QUEUED
+
+
+def test_plano_b_abas_diferentes_geram_lotes_independentes(client, app):
+    """Duas abas distintas (2A_T1 e 1B_T1) devem criar lotes completamente separados."""
+    client.post("/webhook/notas", json=_payload_plano_b("2A", "T1"), headers=_headers())
+    client.post("/webhook/notas", json=_payload_plano_b("1B", "T1"), headers=_headers())
+
+    store = ValidacaoLoteStore(app.config["VALIDACAO_LOTE_DB"])
+    v2a = store.carregar("spreadsheet-planob/2A_T1")
+    v1b = store.carregar("spreadsheet-planob/1B_T1")
+
+    assert v2a is not None
+    assert v1b is not None
+    assert v2a.lote_id != v1b.lote_id
+
+
+def test_plano_b_sheet_name_ausente_retorna_400(client):
+    payload = _payload_plano_b()
+    del payload["sheet_name"]
+    resp = client.post("/webhook/notas", json=payload, headers=_headers())
+    assert resp.status_code == 400
+    assert "sheet_name" in resp.get_json().get("erro", "").lower()
+
+
+def test_plano_b_sheet_name_vazio_retorna_400(client):
+    payload = _payload_plano_b()
+    payload["sheet_name"] = "   "
+    resp = client.post("/webhook/notas", json=payload, headers=_headers())
+    assert resp.status_code == 400
