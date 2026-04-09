@@ -86,6 +86,30 @@ esses alunos devem ser enviados em lotes separados com os IDs corretos.
 O pipeline NAO tenta adivinhar a grade do aluno. Se o iScholar rejeitar uma nota
 com "Disciplina nao pertence a grade curricular", o aluno esta em uma trilha diferente.
 
+### 2o ano — desambiguacao automatica (Plano B)
+
+A partir do Plano B (workbook anual multi-aba), a desambiguacao do 2o ano e
+feita automaticamente pelo backend ao identificar a turma via nome de aba.
+
+Quando o operador processa a aba `2A_T1`, o backend deriva `Turma=2A` e
+resolve `Matematica Frente A` para Daniel, `Biologia` para Perrone, etc.
+Nao e mais necessario preencher aliases manuais na coluna `Frente - Professor`.
+
+Casos resolvidos automaticamente por turma:
+
+| Turma | Disciplina / Frente | Professor resolvido |
+|-------|---------------------|---------------------|
+| 2A    | Matematica Frente A | Daniel (id 66)      |
+| 2B    | Matematica Frente B | Luan (id 71)        |
+| 2C    | Matematica Frente C | Carioca (id 57)     |
+| 2A    | Biologia            | Perrone (id 86)     |
+| 2B    | Biologia Frente B   | Mayara (id 59)      |
+| 2A    | Geografia Frente A  | Carla (id 72)       |
+| 2B    | Geografia Frente B  | Moreto (id 165)     |
+
+O 1o ano continua funcionando com o mesmo mecanismo (chaves qualificadas
+existem no `mapa_professores.json` e resolvem para os IDs corretos).
+
 ### send_failed com sucesso parcial
 
 O status `send_failed` significa "houve pelo menos um erro no lote". Ele pode
@@ -171,28 +195,58 @@ Opcionalmente configuraveis:
 No `google_apps_script.gs`, ajuste:
 - `API_BASE_URL`
 - `WEBHOOK_SECRET`
-- `NOME_ABA_NOTAS`
+
+> `NOME_ABA_NOTAS` foi removido. O script agora processa sempre a **aba ativa**
+> no momento do clique. Navegue até a aba desejada antes de usar o menu.
 
 ## 3. Como instalar o Apps Script
 
 1. Abra a planilha no Google Sheets.
 2. Va em `Extensoes > Apps Script`.
 3. Substitua o conteudo do projeto pelo arquivo `google_apps_script.gs` deste repositorio.
-4. Ajuste as constantes no topo do arquivo.
+4. Ajuste as duas constantes no topo do arquivo:
+   - `API_BASE_URL` — URL do tunel ngrok
+   - `WEBHOOK_SECRET` — segredo do backend
 5. Salve o projeto.
 6. Recarregue a planilha para o menu `iScholar ETL` aparecer.
 7. Na primeira execucao, autorize o script.
 
+> Nao e mais necessario configurar `NOME_ABA_NOTAS`. O script usa a aba ativa.
+
 ## 4. Fluxo do operador
 
-1. Abra a aba configurada em `NOME_ABA_NOTAS`.
+### Plano B — workbook anual multi-aba (ex: `madan_2026_anual.xlsx` importado no Sheets)
+
+1. **Navegue ate a aba da turma e trimestre desejados** (ex: `2A_T1`, `1B_T2`).
 2. Clique em `iScholar ETL > Validar Lote`.
-3. Aguarde o polling terminar e revise o resumo exibido.
-4. Se o lote estiver apto, clique em `iScholar ETL > Aprovar e Enviar`.
-5. Confirme o aprovador. Quando o Google Workspace disponibiliza `Session.getActiveUser().getEmail()`, o script envia esse email ao backend como identidade de sessao; quando isso nao ocorre, a aprovacao continua possivel, mas fica marcada como identidade fraca.
-6. Aguarde o resultado final do envio.
-7. Se quiser apenas testar sem envio real, use `iScholar ETL > Simular (Dry Run)`.
-8. Se o processamento demorar mais do que o polling do dialog, use `iScholar ETL > Mostrar Ultimo Status`. O script consulta primeiro os resultados persistidos e, se ainda nao houver consolidacao, cai para o status do job assincrono.
+3. Um dialogo exibe a aba que sera processada com turma e trimestre — confirme.
+4. Aguarde o polling terminar e revise o resumo exibido.
+5. Se o lote estiver apto, clique em `iScholar ETL > Aprovar e Enviar`.
+6. Confirme o aprovador.
+7. Aguarde o resultado final do envio.
+8. **Repita para cada aba** que quiser processar. Cada aba gera um `lote_id` independente.
+
+> Nunca clique em "Aprovar e Enviar" sem primeiro ter validado a aba correta.
+> O `lote_id` armazenado localmente e da ultima validacao executada.
+
+### Fluxo legado — aba unica (`Notas`)
+
+O fluxo anterior continua funcionando. Basta estar na aba `Notas` ao clicar
+no menu. O dialogo de confirmacao exibira um aviso de que a aba nao segue o
+padrao Plano B — confirme para prosseguir normalmente.
+
+### Outras acoes
+
+- `iScholar ETL > Simular (Dry Run)` — testa sem envio real. Sempre valide primeiro.
+- `iScholar ETL > Mostrar Ultimo Status` — consulta o resultado da ultima acao
+  registrada. Util se o polling do dialog expirar antes do worker terminar.
+- `iScholar ETL > Limpar Estado Local` — apaga `lote_id`, `snapshot_hash` e
+  `job_id` armazenados. Use ao trocar de turma/trimestre.
+
+Confirmacao do aprovador: quando o Google Workspace disponibiliza
+`Session.getActiveUser().getEmail()`, o script envia esse email ao backend
+como identidade de sessao; caso contrario, a aprovacao continua possivel mas
+fica marcada como identidade fraca.
 
 ## 5. O que o operador ve
 
@@ -214,19 +268,28 @@ No envio:
 
 ## 6. Teste manual rapido
 
-> **Estado atual:** fluxo validado end-to-end via Google Sheets com POST real no iScholar (Onda A e Onda B concluidas). Ver secao "Status de validacao" acima.
+> **Estado atual:** fluxo validado end-to-end via Google Sheets com POST real no iScholar (Onda A e Onda B concluidas). Plano B (multi-aba) pronto para piloto com 2A_T1.
 
 1. Inicie backend e worker.
-2. Abra a planilha.
-3. Preencha ou ajuste a aba `Notas`.
-4. Rode `Validar Lote`.
+2. Abra a planilha (workbook anual `madan_2026_anual.xlsx` ou planilha legada).
+3. Navegue ate a aba que quer processar (ex: `2A_T1`).
+4. Rode `Validar Lote` — confirme a aba no dialogo.
 5. Confirme que o dialog mostra `Apto para aprovacao: sim` quando esperado.
 6. Rode `Simular (Dry Run)` para homologar o fluxo sem envio real.
 7. Rode `Aprovar e Enviar` quando quiser executar o envio real.
 
 ## 7. Contingencia via CLI
 
-Se o Apps Script ficar indisponivel, o fluxo oficial continua disponivel pelo CLI:
+Se o Apps Script ficar indisponivel, o fluxo oficial continua disponivel pelo CLI.
+
+**Workbook anual (Plano B) — especificar a aba com `--aba`:**
+
+```bash
+.\.venv\Scripts\python.exe cli_envio.py --planilha madan_2026_anual.xlsx --aba 2A_T1 --lote-id 2026-2a-t1 --dry-run
+.\.venv\Scripts\python.exe cli_envio.py --planilha madan_2026_anual.xlsx --aba 2A_T1 --lote-id 2026-2a-t1 --aprovador "Coordenacao"
+```
+
+**Planilha legada (aba unica):**
 
 ```bash
 .\.venv\Scripts\python.exe cli_envio.py --planilha notas.xlsx --lote-id lote-manual --dry-run

@@ -48,7 +48,26 @@ Em outras palavras: este projeto é um **pipeline operacional**, não um script 
 
 ### 2.1 Papel da Coordenação — geração do template
 
-A coordenação gera um arquivo Excel por turma **antes** do período de preenchimento:
+#### Plano B — workbook anual multi-aba (modelo operacional atual)
+
+O modelo operacional atual usa um único arquivo Excel (`madan_2026_anual.xlsx`) com **12 abas** — uma por turma × trimestre:
+
+```
+1A_T1  1A_T2  1A_T3
+1B_T1  1B_T2  1B_T3
+2A_T1  2A_T2  2A_T3
+2B_T1  2B_T2  2B_T3
+```
+
+Cada aba segue o padrão `<Turma>_<Trimestre>` (ex: `2A_T1`, `1B_T2`). O nome da aba é a fonte de verdade para turma e trimestre — o operador navega até a aba correta antes de processar.
+
+Cada aba contém:
+- **4 colunas fixas** pré-preenchidas: `Estudante`, `RA`, `Turma`, `Trimestre`
+- **1 coluna por (disciplina, frente, tipo de avaliação)** — geradas automaticamente a partir do registro de professores da turma
+
+> O cabeçalho é derivado de `professores_madan.py`, garantindo que apenas as combinações disciplina-frente válidas para aquela turma apareçam como colunas.
+
+#### Alternativa — planilha por turma e trimestre (legado)
 
 ```bash
 python gerador_planilhas.py \
@@ -58,12 +77,7 @@ python gerador_planilhas.py \
     --output ./planilhas/
 ```
 
-O comando gera um arquivo por turma (ex: `1A_T1_2026.xlsx`) com:
-- **1 aba única** chamada `Notas`
-- **4 colunas fixas** pré-preenchidas: `Estudante`, `RA`, `Turma`, `Trimestre`
-- **1 coluna por (disciplina, frente, tipo de avaliação)** — geradas automaticamente a partir do registro de professores da turma
-
-> O cabeçalho é derivado de `professores_madan.py`, garantindo que apenas as combinações disciplina-frente válidas para aquela turma apareçam como colunas.
+Gera um arquivo por turma (ex: `1A_T1_2026.xlsx`) com 1 aba única chamada `Notas`. Continua funcionando sem alteração.
 
 ### 2.2 Papel do Professor — preenchimento
 
@@ -91,7 +105,9 @@ Ao receber a planilha preenchida, o CLI:
 
 1. **Auto-detecta o formato** — wide novo ou semi-wide antigo;
 2. Se wide novo: **valida e despivota** (1 linha por aluno → N linhas por aluno × disciplina × frente);
-3. Processa via pipeline canônico existente sem alteração alguma nas regras pedagógicas.
+3. Se Plano B (nome de aba `<Turma>_<Trimestre>`): **injeta contexto de turma e trimestre** na linha antes da transformação (`aplicar_contexto_aba`);
+4. **Desambiguação automática do 2º ano:** o adaptador usa o contexto de turma para qualificar a chave `Frente - Professor` com o professor correto (ex: `matematica a - daniel` para 2A vs `matematica a - luan` para 1A) — sem necessidade de alias manual;
+5. Processa via pipeline canônico existente sem alteração alguma nas regras pedagógicas.
 
 ---
 
@@ -100,8 +116,9 @@ Ao receber a planilha preenchida, o CLI:
 ```text
 ┌─────────────────────────────────────────────────────────────────────┐
 │  GERAÇÃO DO TEMPLATE (gerador_planilhas.py)                         │
-│  1 arquivo .xlsx por turma · 1 aba "Notas" · formato wide           │
-│  cabeçalho derivado de professores_madan.py                         │
+│  Plano B: 1 workbook anual · 12 abas (<Turma>_<Trimestre>)          │
+│  Legado:  1 arquivo .xlsx por turma · 1 aba "Notas"                 │
+│  cabeçalho derivado de professores_madan.py · formato wide          │
 └────────────────────────────────┬────────────────────────────────────┘
                                  │  professor preenche
 ┌────────────────────────────────▼────────────────────────────────────┐
@@ -114,6 +131,7 @@ Ao receber a planilha preenchida, o CLI:
              │  ADAPTER PATTERN (wide_format_adapter.py) │
              │  Unpivot: 1 linha → N linhas virtuais     │
              │  Regex extrai disciplina, frente, tipo    │
+             │  Desambigua professor por turma (2º ano)  │
              │  Isola regras de negócio do transformador │
              └───────────────────┬──────────────────────┘
                                  │  formato canônico (semi-wide)
@@ -250,6 +268,7 @@ Estudante | RA | Turma | Trimestre
   - `construir_cabecalho_wide(grupos)` → lista de nomes de coluna compatíveis com o adapter
   - `gerar_planilha_turma(turma, trimestre, ano, alunos, output_dir)` → gera 1 arquivo `.xlsx`
   - `gerar_todas_planilhas(trimestre, ano, alunos, output_dir)` → itera todas as turmas do roster
+  - `gerar_workbook_anual(ano, alunos_por_turma, output_path)` → gera 1 workbook anual com 12 abas trimestrais
 
 ### 5.2 Adaptador de formato
 
@@ -259,7 +278,8 @@ Estudante | RA | Turma | Trimestre
   - `validar_colunas_wide_novo(colunas)` → lista de problemas (vazia se ok)
   - `despivotar_dataframe(df)` → DataFrame no formato semi-wide antigo
   - `parsear_coluna_dinamica(nome)` → `ColunaDinamica` com `disciplina`, `frente`, `tipo_avaliacao`
-  - `construir_frente_professor(disciplina, frente)` → chave compatível com `mapa_professores.json`
+  - `construir_frente_professor(disciplina, frente)` → chave base compatível com `mapa_professores.json`
+  - `_qualificar_chave_com_professor(base_key, disciplina, serie, letra)` → qualifica a chave com o professor da turma quando há ambiguidade entre anos (ex: Matemática A é Daniel em 2A e Luan em 1A)
 
 ### 5.3 Entrada e normalização
 
@@ -327,7 +347,11 @@ backend HTTP e pelo worker.
 ### 6.2 Exemplos de uso
 
 ```bash
-# Dry run com planilha wide (nova):
+# Plano B — workbook anual, especificar a aba com --aba:
+python cli_envio.py --planilha madan_2026_anual.xlsx --aba 2A_T1 --lote-id 2026-2a-t1 --dry-run
+python cli_envio.py --planilha madan_2026_anual.xlsx --aba 2A_T1 --lote-id 2026-2a-t1 --aprovador "Coordenacao"
+
+# Planilha por turma (legado):
 python cli_envio.py --planilha planilhas/1A_T1_2026.xlsx --lote-id t1-1A-2026 --dry-run
 
 # Envio real com aprovação automática:
@@ -357,6 +381,7 @@ python cli_envio.py \
 | Argumento | Obrigatório | Descrição |
 |---|---|---|
 | `--planilha` | Sim¹ | Caminho para o Excel/CSV de notas |
+| `--aba` | Não² | Nome da aba a processar no workbook anual (ex: `2A_T1`). Obrigatório para Plano B. |
 | `--turma-dir` | Sim¹ | Diretório com planilhas multi-abas (formato legado) |
 | `--lote-id` | Sim | Identificador único do lote (ex: `t1-1A-2026`) |
 | `--dry-run` | Não | Valida e monta payloads sem POST real |
@@ -370,6 +395,7 @@ python cli_envio.py \
 | `--db-audit` | Não | Padrão: `envio_lote_audit.db` |
 
 ¹ `--planilha` e `--turma-dir` são mutuamente exclusivos; exatamente um dos dois deve ser informado.
+² `--aba` é necessário quando `--planilha` aponta para o workbook anual (Plano B). Dispensável para planilhas com aba única.
 
 ### 6.4 Exit codes
 
@@ -387,6 +413,18 @@ python cli_envio.py \
 ## 7. Gerador de Planilhas (`gerador_planilhas.py`)
 
 ```bash
+# Gerar workbook anual do Plano B:
+python gerador_planilhas.py \
+    --anual \
+    --ano 2026 \
+    --alunos roster.csv \
+    --output ./planilhas/
+
+# Saída esperada:
+# Roster carregado: 120 alunos
+# Workbook anual gerado:
+#   planilhas/madan_2026_anual.xlsx
+
 # Gerar planilhas para todas as turmas do roster:
 python gerador_planilhas.py \
     --trimestre T1 \
@@ -531,13 +569,15 @@ Resolvido por `mapa_avaliacoes.json`. IDs coletados manualmente da interface web
 
 ### 10.4 `id_professor` — via DE-PARA local
 
-Resolvido por `mapa_professores.json` (114 chaves no formato `"matematica a"`, `"fisica b"`, etc.). Autopreenchimento via `GET /funcionarios/professores`.
+Resolvido por `mapa_professores.json` (com chaves base e, no Plano B, também chaves qualificadas como `"matematica a - daniel"`). Autopreenchimento via `GET /funcionarios/professores`.
 
 **A chave de lookup é construída pelo adapter:**
 ```python
 construir_frente_professor("Matemática", "Frente A")  # → "matematica a"
 construir_frente_professor("Gramática",  "Frente Única")  # → "gramatica"
 ```
+
+Quando o adapter consegue desambiguar a turma, ele qualifica essa chave com o professor esperado da série/turma. O resolvedor faz lookup direto no `mapa_professores.json`; ele não faz fallback automático da chave qualificada para a chave base. Por isso, as chaves qualificadas exigidas pelo Plano B precisam existir no mapa.
 
 ### 10.5 Postura do resolvedor
 
