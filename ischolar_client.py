@@ -40,10 +40,13 @@ Mantido apenas para o worker existente. Não será expandido.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 import os
 from decimal import Decimal, ROUND_HALF_UP
+import threading
+import time
 from typing import Any, Dict, Optional, Mapping, List
 
 import pandas as pd
@@ -55,6 +58,51 @@ from config import config
 from logger import configurar_logger
 
 log = configurar_logger("etl.ischolar_client")
+
+
+class _SlidingWindowRateLimiter:
+    """Limita chamadas dentro de uma janela deslizante em memória."""
+
+    def __init__(
+        self,
+        *,
+        max_requests: int,
+        window_seconds: float,
+        clock: Any = None,
+        sleeper: Any = None,
+    ) -> None:
+        self.max_requests = max(0, int(max_requests))
+        self.window_seconds = max(0.0, float(window_seconds))
+        self._clock = clock or time.monotonic
+        self._sleep = sleeper or time.sleep
+        self._eventos: deque[float] = deque()
+        self._lock = threading.Lock()
+
+    def acquire(self) -> float:
+        """
+        Bloqueia até haver espaço na janela e retorna o tempo total aguardado.
+        """
+        if self.max_requests <= 0 or self.window_seconds <= 0:
+            return 0.0
+
+        total_espera = 0.0
+        while True:
+            espera = 0.0
+            with self._lock:
+                agora = float(self._clock())
+                limite = agora - self.window_seconds
+                while self._eventos and self._eventos[0] <= limite:
+                    self._eventos.popleft()
+
+                if len(self._eventos) < self.max_requests:
+                    self._eventos.append(agora)
+                    return total_espera
+
+                espera = self.window_seconds - (agora - self._eventos[0])
+
+            espera = max(0.01, espera)
+            self._sleep(espera)
+            total_espera += espera
 
 
 @dataclass
@@ -211,8 +259,25 @@ class IScholarClient:
         )
         self.codigo_escola = x_codigo_escola or getattr(config, "ISCHOLAR_CODIGO_ESCOLA", "")
         self.timeout = getattr(config, "ISCHOLAR_TIMEOUT_SEGUNDOS", 30)
+        self.rate_limit_enabled = bool(
+            getattr(config, "ISCHOLAR_RATE_LIMIT_ENABLED", True)
+        )
+        self.rate_limit_max_requests = int(
+            getattr(config, "ISCHOLAR_RATE_LIMIT_MAX_REQUESTS", 45)
+        )
+        self.rate_limit_window_seconds = float(
+            getattr(config, "ISCHOLAR_RATE_LIMIT_WINDOW_SECONDS", 10)
+        )
 
         self.session = requests.Session()
+        self._rate_limiter = (
+            _SlidingWindowRateLimiter(
+                max_requests=self.rate_limit_max_requests,
+                window_seconds=self.rate_limit_window_seconds,
+            )
+            if self.rate_limit_enabled
+            else None
+        )
         
         retries = Retry(
             total=getattr(config, "ISCHOLAR_MAX_RETRIES", 3),
@@ -286,6 +351,32 @@ class IScholarClient:
             "Accept": "application/json"
         }
 
+    def _request(self, method: str, url: str, **kwargs: Any) -> requests.Response:
+        """
+        Funil único de saída HTTP para a API do iScholar.
+
+        Mantém o rate limiting centralizado e preserva os patches de teste em
+        `session.get` / `session.post`.
+        """
+        waited = 0.0
+        if self._rate_limiter is not None:
+            waited = self._rate_limiter.acquire()
+            if waited >= 0.05:
+                log.info(
+                    "Rate limit iScholar acionado | aguardado=%.2fs | metodo=%s | url=%s",
+                    waited,
+                    method.upper(),
+                    url,
+                )
+
+        kwargs.setdefault("timeout", self.timeout)
+        metodo = method.upper()
+        if metodo == "GET":
+            return self.session.get(url, **kwargs)
+        if metodo == "POST":
+            return self.session.post(url, **kwargs)
+        return self.session.request(metodo, url, **kwargs)
+
     def _coerce_int_strict(self, val: Any, nome: str) -> int:
         """Garante que o valor seja um inteiro exato, sem truncamento perigoso."""
         if pd.isna(val):
@@ -351,6 +442,11 @@ class IScholarClient:
         """
         Retorna (erro_categoria, transitorio).
         """
+        msg = str(mensagem or "").lower()
+        if status_code == 429:
+            return ("rate_limit", True)
+        if status_code == 403 and "cloudflare" in msg and "blocked" in msg:
+            return ("rate_limit", True)
         if status_code in (401, 403):
             return ("auth", False)
         if status_code in (400, 422):
@@ -444,11 +540,11 @@ class IScholarClient:
             params[chave] = valor
 
         try:
-            resp = self.session.get(
+            resp = self._request(
+                "GET",
                 endpoint,
                 params=params,
                 headers=self._get_headers(),
-                timeout=self.timeout,
             )
             if resp.status_code in (200, 201):
                 try:
@@ -537,11 +633,11 @@ class IScholarClient:
             params["situacao"] = str(situacao).strip()
 
         try:
-            resp = self.session.get(
+            resp = self._request(
+                "GET",
                 endpoint,
                 params=params,
                 headers=self._get_headers(),
-                timeout=self.timeout,
             )
             if resp.status_code in (200, 201):
                 try:
@@ -692,11 +788,11 @@ class IScholarClient:
             )
 
         try:
-            resp = self.session.get(
+            resp = self._request(
+                "GET",
                 endpoint,
                 params=params,
                 headers=self._get_headers(),
-                timeout=self.timeout,
             )
             if resp.status_code in (200, 201):
                 try:
@@ -885,11 +981,11 @@ class IScholarClient:
             )
 
         try:
-            resp = self.session.post(
+            resp = self._request(
+                "POST",
                 endpoint,
                 json=payload,
                 headers=headers,
-                timeout=self.timeout,
             )
             if resp.status_code in (200, 201):
                 try:
@@ -1001,10 +1097,10 @@ class IScholarClient:
         endpoint = f"{self.base_url}/disciplinas"
 
         try:
-            resp = self.session.get(
+            resp = self._request(
+                "GET",
                 endpoint,
                 headers=self._get_headers(),
-                timeout=self.timeout,
             )
             if resp.status_code in (200, 201):
                 try:
@@ -1083,10 +1179,10 @@ class IScholarClient:
         endpoint = f"{self.base_url}/funcionarios/professores"
 
         try:
-            resp = self.session.get(
+            resp = self._request(
+                "GET",
                 endpoint,
                 headers=self._get_headers(),
-                timeout=self.timeout,
             )
             if resp.status_code in (200, 201):
                 try:
@@ -1177,11 +1273,11 @@ class IScholarClient:
         }
 
         try:
-            resp = self.session.get(
+            resp = self._request(
+                "GET",
                 endpoint,
                 params=params,
                 headers=self._get_headers(),
-                timeout=self.timeout,
             )
             if resp.status_code in (200, 201):
                 try:
@@ -1315,7 +1411,7 @@ class IScholarClient:
             url = f"{self.base_url}/diario/notas"
             params = {"id_matricula": v_id}
             
-            resp = self.session.get(url, params=params, headers=self._get_headers(), timeout=self.timeout)
+            resp = self._request("GET", url, params=params, headers=self._get_headers())
             resultado = self._processar_resposta(resp)
             
             if resultado.sucesso:
@@ -1359,7 +1455,7 @@ class IScholarClient:
             if obs is not None:
                 payload["observacao"] = obs
 
-            resp = self.session.post(url, json=payload, headers=self._get_headers(), timeout=self.timeout)
+            resp = self._request("POST", url, json=payload, headers=self._get_headers())
             return self._processar_resposta(resp)
         except Exception as exc:
             return self._tratar_excecao(exc)

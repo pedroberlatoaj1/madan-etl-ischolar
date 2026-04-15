@@ -7,6 +7,7 @@ from ischolar_client import (
     ResultadoEnvio,
     ResultadoSyncNotas,
     ResultadoLancamentoNota,
+    _SlidingWindowRateLimiter,
 )
 
 
@@ -43,6 +44,51 @@ def transient_post(msg: str = "server error") -> ResultadoEnvio:
 
 def permanent_post_422(msg: str = "unprocessable") -> ResultadoEnvio:
     return ResultadoEnvio(sucesso=False, transitorio=False, status_code=422, mensagem=msg)
+
+
+class TestRateLimiter:
+    def test_aguarda_quando_janela_esta_cheia(self):
+        agora = {"t": 0.0}
+        esperas: list[float] = []
+
+        def fake_clock():
+            return agora["t"]
+
+        def fake_sleep(segundos: float):
+            esperas.append(segundos)
+            agora["t"] += segundos
+
+        limiter = _SlidingWindowRateLimiter(
+            max_requests=2,
+            window_seconds=10,
+            clock=fake_clock,
+            sleeper=fake_sleep,
+        )
+
+        assert limiter.acquire() == 0.0
+        assert limiter.acquire() == 0.0
+        waited = limiter.acquire()
+
+        assert waited == pytest.approx(10.0)
+        assert esperas == [pytest.approx(10.0)]
+
+    def test_libera_sem_espera_quando_janela_expira(self):
+        agora = {"t": 0.0}
+        esperas: list[float] = []
+
+        limiter = _SlidingWindowRateLimiter(
+            max_requests=2,
+            window_seconds=10,
+            clock=lambda: agora["t"],
+            sleeper=lambda segundos: esperas.append(segundos),
+        )
+
+        assert limiter.acquire() == 0.0
+        assert limiter.acquire() == 0.0
+
+        agora["t"] = 10.1
+        assert limiter.acquire() == 0.0
+        assert esperas == []
 
 
 class TestSyncNotasIdempotente:

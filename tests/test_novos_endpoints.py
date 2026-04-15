@@ -291,6 +291,16 @@ class TestBuscarAluno:
         assert resultado.sucesso is False
         assert resultado.erro_categoria == "auth"
 
+    def test_busca_403_cloudflare_bloqueado_trata_como_rate_limit(self, client):
+        mock_resp = _mock_response(403, None)
+        mock_resp.text = "<html><title>Attention Required! | Cloudflare</title>Sorry, you have been blocked</html>"
+        with patch.object(client.session, "get", return_value=mock_resp):
+            resultado = client.buscar_aluno(ra="12345")
+
+        assert resultado.sucesso is False
+        assert resultado.transitorio is True
+        assert resultado.erro_categoria == "rate_limit"
+
     def test_busca_sem_identificador_levanta_valueerror(self, client):
         with pytest.raises(ValueError, match="informe exatamente um"):
             client.buscar_aluno()

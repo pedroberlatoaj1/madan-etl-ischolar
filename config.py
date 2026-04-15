@@ -34,6 +34,15 @@ class Config:
     ISCHOLAR_API_KEY: str = ISCHOLAR_API_TOKEN  # Alias de compatibilidade para código legado
     ISCHOLAR_TIMEOUT_SEGUNDOS: int = int(os.getenv("ISCHOLAR_TIMEOUT_SEGUNDOS", "30"))
     ISCHOLAR_MAX_RETRIES: int = int(os.getenv("ISCHOLAR_MAX_RETRIES", "3"))
+    ISCHOLAR_RATE_LIMIT_ENABLED: bool = os.getenv(
+        "ISCHOLAR_RATE_LIMIT_ENABLED", "true"
+    ).lower() in ("1", "true", "yes")
+    ISCHOLAR_RATE_LIMIT_MAX_REQUESTS: int = int(
+        os.getenv("ISCHOLAR_RATE_LIMIT_MAX_REQUESTS", "45")
+    )
+    ISCHOLAR_RATE_LIMIT_WINDOW_SECONDS: float = float(
+        os.getenv("ISCHOLAR_RATE_LIMIT_WINDOW_SECONDS", "10")
+    )
 
     # --- Transformador: parser de colunas ---
     COLUNAS_OBRIGATORIAS: List[str] = field(
