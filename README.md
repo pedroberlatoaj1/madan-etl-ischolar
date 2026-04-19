@@ -16,6 +16,9 @@ template wide por turma → professor preenche → auto-detecção de formato
 > Componentes de monitoramento, webhook e worker legados podem continuar no
 > repositório por compatibilidade ou transição, mas **não são a rota oficial principal**.
 >
+> Para operação do dia a dia, deploy e resposta a incidentes, consulte também
+> `docs/OPERACAO.md`.
+>
 > O README não substitui:
 > - o contrato efetivo do código;
 > - a validação em homologação com o iScholar;
@@ -725,7 +728,8 @@ O backend continua dono do processo:
 - persiste validacao e resultado consolidado do envio;
 - expoe o estado consultavel para polling do operador.
 
-Consulte o guia operacional em `operacao_google_sheets.md`.
+Consulte o guia operacional em `operacao_google_sheets.md` e o runbook
+operacional em `docs/OPERACAO.md`.
 
 ## 17. Contingencia
 
@@ -734,4 +738,29 @@ O CLI continua suportado como rota de contingência operacional e usa o mesmo ru
 ```bash
 .\.venv\Scripts\python.exe cli_envio.py --planilha notas.xlsx --lote-id lote-manual --dry-run
 .\.venv\Scripts\python.exe cli_envio.py --planilha notas.xlsx --lote-id lote-manual --aprovador "Coordenacao"
+```
+
+## 18. Deploy
+
+Na VPS, o deploy deve passar sempre por `deploy.sh` para garantir o fluxo completo no mesmo comando:
+
+- `git fetch` com revisao dos commits que vao entrar;
+- confirmacao explicita do operador;
+- `git pull --ff-only`;
+- limpeza de `__pycache__` e `*.pyc`;
+- restart de `madan-webhook` e `madan-worker`;
+- validacao final do import de `validacao_pre_envio`.
+
+### 18.1 Comandos
+
+1. Local: `git push`
+2. VPS: `ssh madan@vps` e depois `madan-deploy`
+3. Verificar: `madan-status`
+
+### 18.2 Aliases sugeridos para `~/.bashrc`
+
+```bash
+alias madan-deploy='/opt/madan-etl/app/deploy.sh'
+alias madan-status='systemctl status madan-webhook madan-worker --no-pager | head -20'
+alias madan-logs='sudo journalctl -u madan-worker -u madan-webhook -f'
 ```
