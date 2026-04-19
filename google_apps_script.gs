@@ -44,6 +44,9 @@ const PROP_ISCHOLAR_TOKEN = "ISCHOLAR_TOKEN";
 const ISCHOLAR_TAMANHO_LOTE_POST = 25;
 const ISCHOLAR_TEMPO_MAX_MS = 4 * 60 * 1000;
 const ISCHOLAR_MAX_PAGINAS_ALUNOS = 20;
+const EMAIL_NOTIFICACOES = "marina@madan.com.br";
+const EMAIL_BCC = "pedroberlatoaj1@gmail.com";
+const HABILITAR_NOTIFICACOES = true;
 
 // Padrão reconhecido como aba trimestral Plano B: ex. "2A_T1", "1B_T3"
 var REGEX_ABA_PLANO_B = /^([1-9][A-Za-z])_(T[123])$/i;
@@ -58,6 +61,7 @@ const PROP_VALIDACAO_JOB_ID = "etl_ischolar_validacao_job_id";
 const PROP_APROVACAO_JOB_ID = "etl_ischolar_aprovacao_job_id";
 const PROP_ULTIMO_STATUS = "etl_ischolar_ultimo_status";
 const PROP_ULTIMA_ABA = "etl_ischolar_ultima_aba";
+const PROP_NOTIFICACAO_PREFIX = "etl_ischolar_notificado";
 
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -75,6 +79,10 @@ function onOpen() {
 }
 
 function menuValidarLote() {
+  executarFluxoValidacao_();
+}
+
+function executarFluxoValidacao_() {
   executarAcaoComTratamento_(function() {
     garantirBackendDisponivel_("validar o lote");
     var aba = obterAbaAtiva_();
@@ -102,6 +110,23 @@ function menuValidarLote() {
       snapshot_hash: validacao.snapshot_hash || body.snapshot_hash || "",
       ultimo_status: validacao.status || ""
     });
+
+    var infoAba = _interpretarNomeAba_(aba.getName());
+    var turmaTrimestre = infoAba ? (infoAba.turma + "_" + infoAba.trimestre) : aba.getName();
+    var resumoValidacao = validacao.resumo || {};
+    var assuntoValidacao =
+      "[Madan ETL] Lote " +
+      turmaTrimestre +
+      " validado \u2014 " +
+      valorOuZero_(resumoValidacao.total_sendaveis) +
+      " envios prontos";
+    var corpoValidacao = montarHtmlNotificacaoValidacao_(validacao, aba);
+    notificarEventoLote_(
+      validacao.lote_id || payload.lote_id || "",
+      "validacao_concluida",
+      assuntoValidacao,
+      corpoValidacao
+    );
 
     mostrarDialogoTexto_(
       "Resultado da Validacao",
@@ -228,9 +253,20 @@ function executarFluxoAprovacao_(dryRun) {
       ultimo_status: body.status || ""
     });
 
+    notificarEventoLote_(
+      body.lote_id || validacao.lote_id || "",
+      dryRun ? "aprovacao_iniciada_dry_run" : "aprovacao_iniciada_envio_real",
+      "[Madan ETL] Lote aprovado \u2014 iniciando envio",
+      montarHtmlNotificacaoAprovacao_(body.lote_id || validacao.lote_id || "", aprovador, dryRun)
+    );
+
     var resultado = aguardarResultadoEnvio_(body.lote_id || validacao.lote_id, body.job_id || "");
     salvarEstadoLocal_({
       ultimo_status: resultado.status || ""
+    });
+    reportarResultados_(resultado, {
+      dry_run: dryRun,
+      aprovador: aprovador.aprovado_por
     });
 
     mostrarDialogoTexto_(
@@ -296,6 +332,12 @@ function executarFluxoAppsScript_(dryRun) {
     if (aprovacao.statusCode !== 202) {
       throw new Error(extrairMensagemErro_(aprovacao));
     }
+    notificarEventoLote_(
+      validacao.lote_id || "",
+      dryRun ? "aprovacao_apps_script_iniciada_dry_run" : "aprovacao_apps_script_iniciada_envio_real",
+      "[Madan ETL] Lote aprovado \u2014 iniciando envio",
+      montarHtmlNotificacaoAprovacao_(validacao.lote_id || "", aprovador, dryRun)
+    );
 
     var pacote = obterPacoteExecucao_(validacao.lote_id, dryRun);
     var mapaMatriculas = resolverMatriculasPorTurma_(pacote.turma.id_turma);
@@ -308,6 +350,10 @@ function executarFluxoAppsScript_(dryRun) {
       snapshot_hash: pacote.snapshot_hash,
       aprovacao_job_id: "",
       ultimo_status: resultadoFinal.status || ""
+    });
+    reportarResultados_(resultadoFinal, {
+      dry_run: dryRun,
+      aprovador: aprovador.aprovado_por
     });
 
     mostrarDialogoTexto_(
@@ -432,6 +478,7 @@ function lerDadosDaAba_(aba) {
 
 function chamarApi_(method, path, body) {
   var url = API_BASE_URL.replace(/\/$/, "") + path;
+  Logger.log("[chamarApi_] " + String(method || "get").toUpperCase() + " " + path);
   var headers = {
     "X-Webhook-Secret": WEBHOOK_SECRET,
     "X-Webhook-Timestamp": String(Math.floor(Date.now() / 1000)),
@@ -464,6 +511,11 @@ function chamarApi_(method, path, body) {
   } catch (err2) {
     json = null;
   }
+
+  Logger.log(
+    "[chamarApi_] status=" + resposta.getResponseCode() +
+    " | path=" + path
+  );
 
   return {
     statusCode: resposta.getResponseCode(),
@@ -724,6 +776,364 @@ function reportarResultadoExecucao_(pacote, resultados, aprovador, dryRun) {
     throw new Error(extrairMensagemErro_(resposta));
   }
   return resposta.json || {};
+}
+
+function notificar_(assunto, corpoHtml) {
+  Logger.log("[notificar_] preparando envio | assunto=" + (assunto || "(sem assunto)"));
+
+  if (!HABILITAR_NOTIFICACOES) {
+    Logger.log("[notificar_] notificacoes desabilitadas por HABILITAR_NOTIFICACOES=false.");
+    return false;
+  }
+
+  var destinatario = String(EMAIL_NOTIFICACOES || "").trim();
+  if (!destinatario) {
+    Logger.log("[notificar_] EMAIL_NOTIFICACOES vazio. Notificacao ignorada.");
+    return false;
+  }
+
+  var assuntoFinal = String(assunto || "[Madan ETL] Notificacao");
+  var htmlBody = String(corpoHtml || "<p>Sem conteudo.</p>");
+  var opcoes = {
+    htmlBody: htmlBody
+  };
+  var bcc = String(EMAIL_BCC || "").trim();
+  if (bcc) {
+    opcoes.bcc = bcc;
+  }
+
+  try {
+    GmailApp.sendEmail(destinatario, assuntoFinal, htmlParaTexto_(htmlBody), opcoes);
+    Logger.log(
+      "[notificar_] email enviado | para=" + destinatario +
+      " | bcc=" + (bcc || "-") +
+      " | assunto=" + assuntoFinal
+    );
+    return true;
+  } catch (err) {
+    Logger.log("[notificar_] falha no envio de email: " + mensagemErroHumana_(err));
+    return false;
+  }
+}
+
+function notificarEventoLote_(loteId, evento, assunto, corpoHtml) {
+  var loteSeguro = String(loteId || "sem_lote").trim() || "sem_lote";
+  var eventoSeguro = String(evento || "evento").trim() || "evento";
+  var chave = PROP_NOTIFICACAO_PREFIX + ":" + encodeURIComponent(loteSeguro) + ":" + encodeURIComponent(eventoSeguro);
+  var props = PropertiesService.getScriptProperties();
+
+  try {
+    var jaNotificado = props.getProperty(chave);
+    if (jaNotificado) {
+      Logger.log("[notificarEventoLote_] dedupe ativo. Ignorando envio repetido | chave=" + chave);
+      return;
+    }
+  } catch (errDedupeLeitura) {
+    Logger.log("[notificarEventoLote_] falha ao ler dedupe: " + mensagemErroHumana_(errDedupeLeitura));
+  }
+
+  var enviado = notificar_(assunto, corpoHtml);
+  if (!enviado) {
+    Logger.log("[notificarEventoLote_] email nao enviado (toggle/erro). chave=" + chave);
+    return;
+  }
+
+  try {
+    props.setProperty(chave, new Date().toISOString());
+    Logger.log("[notificarEventoLote_] dedupe registrado com sucesso | chave=" + chave);
+  } catch (errDedupeGravacao) {
+    Logger.log("[notificarEventoLote_] falha ao gravar dedupe: " + mensagemErroHumana_(errDedupeGravacao));
+  }
+}
+
+function reportarResultados_(resultado, contexto) {
+  try {
+    var dados = resultado || {};
+    var ctx = contexto || {};
+    var dryRun = !!ctx.dry_run;
+    var loteId = String(dados.lote_id || ctx.lote_id || "").trim();
+    var total = valorOuZero_(dados.total_sendaveis);
+    var enviados = valorOuZero_(dados.quantidade_enviada);
+    var errosHttp = extrairErrosHttpEnvio_(dados);
+
+    var assuntoBase = "[Madan ETL] Envio conclu\u00eddo \u2014 " + enviados + "/" + total;
+    var assunto = errosHttp.length ? ("\u26A0\uFE0F " + assuntoBase) : assuntoBase;
+    var corpo = montarHtmlNotificacaoEnvio_(dados, ctx, errosHttp);
+
+    notificarEventoLote_(
+      loteId || "sem_lote",
+      dryRun ? "envio_concluido_dry_run" : "envio_concluido_envio_real",
+      assunto,
+      corpo
+    );
+  } catch (err) {
+    Logger.log("[reportarResultados_] falha ao montar/enviar notificacao: " + mensagemErroHumana_(err));
+  }
+}
+
+function montarHtmlNotificacaoValidacao_(validacao, aba) {
+  var dados = validacao || {};
+  var resumo = dados.resumo || {};
+  var linkAba = montarLinkAba_(aba);
+  var tabela = montarTabelaHtmlNotificacao_([
+    ["Linhas", valorOuZero_(resumo.total_linhas)],
+    ["Sendaveis", valorOuZero_(resumo.total_sendaveis)],
+    ["Avisos", valorOuZero_(resumo.total_avisos)],
+    ["Erros", valorOuZero_(resumo.total_erros)]
+  ]);
+
+  return [
+    '<div style="font-family:Arial,sans-serif;font-size:13px;color:#202124;">',
+    "<p>Validacao concluida para o lote <b>" + escaparHtml_(dados.lote_id || "-") + "</b>.</p>",
+    tabela,
+    (linkAba
+      ? '<p><a href="' + escaparHtmlAtributo_(linkAba) + '">Abrir aba da planilha</a></p>'
+      : ""),
+    "</div>"
+  ].join("");
+}
+
+function montarHtmlNotificacaoAprovacao_(loteId, aprovador, dryRun) {
+  var nomeAprovador = (aprovador && aprovador.aprovado_por) ? aprovador.aprovado_por : "-";
+  var tabela = montarTabelaHtmlNotificacao_([
+    ["Lote", loteId || "-"],
+    ["Aprovador", nomeAprovador],
+    ["Dry run", boolSimNao_(dryRun)]
+  ]);
+  return [
+    '<div style="font-family:Arial,sans-serif;font-size:13px;color:#202124;">',
+    "<p>O lote foi aprovado e o envio foi iniciado.</p>",
+    tabela,
+    "</div>"
+  ].join("");
+}
+
+function montarHtmlNotificacaoEnvio_(resultado, contexto, errosHttp) {
+  var dados = resultado || {};
+  var ctx = contexto || {};
+  var total = valorOuZero_(dados.total_sendaveis);
+  var enviados = valorOuZero_(dados.quantidade_enviada);
+  var linkAudit = montarLinkAuditResultado_(dados.lote_id || ctx.lote_id || "");
+  var tabela = montarTabelaHtmlNotificacao_([
+    ["Lote", dados.lote_id || ctx.lote_id || "-"],
+    ["Status", dados.status || "-"],
+    ["Enviados", enviados],
+    ["Total", total],
+    ["Com erro", valorOuZero_(dados.quantidade_com_erro)],
+    ["Erros de envio", valorOuZero_(dados.total_erros_envio)]
+  ]);
+
+  var blocoErros = "";
+  if (errosHttp && errosHttp.length) {
+    var top5 = errosHttp.slice(0, 5);
+    var itens = top5.map(function(item) {
+      return "<li>" + escaparHtml_(item) + "</li>";
+    }).join("");
+    blocoErros =
+      "<p><b>Primeiros erros HTTP (4xx/5xx):</b></p>" +
+      "<ol>" + itens + "</ol>";
+  }
+
+  return [
+    '<div style="font-family:Arial,sans-serif;font-size:13px;color:#202124;">',
+    "<p>Processamento de envio concluido.</p>",
+    tabela,
+    blocoErros,
+    (linkAudit
+      ? '<p><a href="' + escaparHtmlAtributo_(linkAudit) + '">Abrir audit do lote</a></p>'
+      : ""),
+    "</div>"
+  ].join("");
+}
+
+function montarTabelaHtmlNotificacao_(linhas) {
+  var rows = (linhas || []).map(function(linha) {
+    return (
+      '<tr>' +
+      '<td style="border:1px solid #dadce0;padding:6px 8px;background:#f8f9fa;"><b>' + escaparHtml_(linha[0]) + "</b></td>" +
+      '<td style="border:1px solid #dadce0;padding:6px 8px;">' + escaparHtml_(String(linha[1])) + "</td>" +
+      "</tr>"
+    );
+  }).join("");
+
+  return (
+    '<table style="border-collapse:collapse;margin:8px 0 12px 0;">' +
+    rows +
+    "</table>"
+  );
+}
+
+function montarLinkAba_(aba) {
+  if (!aba) {
+    return "";
+  }
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    return ss.getUrl() + "#gid=" + aba.getSheetId();
+  } catch (err) {
+    Logger.log("[montarLinkAba_] nao foi possivel montar link da aba: " + mensagemErroHumana_(err));
+    return "";
+  }
+}
+
+function montarLinkAuditResultado_(loteId) {
+  var lote = String(loteId || "").trim();
+  if (!lote) {
+    return "";
+  }
+  return API_BASE_URL.replace(/\/$/, "") + "/lote/" + encodeURIComponent(lote) + "/resultado-envio";
+}
+
+function extrairErrosHttpEnvio_(resultado) {
+  var erros = [];
+  var dados = resultado || {};
+  var resumo = dados.resumo || {};
+  var itens = [];
+
+  if (Array.isArray(resumo.itens)) {
+    itens = resumo.itens;
+  } else if (Array.isArray(dados.itens)) {
+    itens = dados.itens;
+  }
+
+  for (var i = 0; i < itens.length; i++) {
+    var item = itens[i] || {};
+    var statusCode = extrairCodigoHttp_(item.status_code);
+    if (!(statusCode >= 400 && statusCode < 600)) {
+      statusCode = extrairCodigoHttp_(item.mensagem);
+    }
+    if (!(statusCode >= 400 && statusCode < 600)) {
+      statusCode = extrairCodigoHttp_(item.resposta_api);
+    }
+    if (statusCode >= 400 && statusCode < 600) {
+      erros.push(formatarLinhaErroEnvio_(item, statusCode));
+    }
+  }
+
+  var colecoesErros = [];
+  if (Array.isArray(resumo.erros)) colecoesErros.push(resumo.erros);
+  if (Array.isArray(dados.erros)) colecoesErros.push(dados.erros);
+  for (var c = 0; c < colecoesErros.length; c++) {
+    var colecao = colecoesErros[c];
+    for (var j = 0; j < colecao.length; j++) {
+      var itemErro = colecao[j] || {};
+      var statusErro = extrairCodigoHttp_(itemErro.status_code);
+      if (!(statusErro >= 400 && statusErro < 600)) {
+        statusErro = extrairCodigoHttp_(itemErro.mensagem || itemErro.erro || itemErro.descricao);
+      }
+      if (statusErro >= 400 && statusErro < 600) {
+        erros.push(formatarLinhaErroEnvio_(itemErro, statusErro));
+      }
+    }
+  }
+
+  if (!erros.length) {
+    var statusTopo = extrairCodigoHttp_(dados.mensagem);
+    if (statusTopo >= 400 && statusTopo < 600) {
+      erros.push("HTTP " + statusTopo + " - " + limitarTexto_(String(dados.mensagem || ""), 220));
+    }
+  }
+
+  if (!erros.length && (valorOuZero_(dados.total_erros_envio) > 0 || valorOuZero_(dados.quantidade_com_erro) > 0)) {
+    var statusResumo = extrairCodigoHttp_(resumo);
+    if (statusResumo >= 400 && statusResumo < 600) {
+      erros.push("HTTP " + statusResumo + " - Erro detectado no resumo do envio.");
+    }
+  }
+
+  if (erros.length > 1) {
+    var vistos = {};
+    erros = erros.filter(function(erroTxt) {
+      if (vistos[erroTxt]) return false;
+      vistos[erroTxt] = true;
+      return true;
+    });
+  }
+
+  Logger.log("[extrairErrosHttpEnvio_] erros_http_detectados=" + erros.length);
+  return erros;
+}
+
+function extrairCodigoHttp_(valor) {
+  if (valor === null || valor === undefined) {
+    return null;
+  }
+
+  var numero = Number(valor);
+  if (!isNaN(numero) && numero >= 400 && numero < 600) {
+    return Math.floor(numero);
+  }
+
+  if (typeof valor === "object") {
+    if (valor.status_code !== undefined && valor.status_code !== null) {
+      var sc = extrairCodigoHttp_(valor.status_code);
+      if (sc) return sc;
+    }
+    try {
+      valor = JSON.stringify(valor);
+    } catch (errJson) {
+      valor = String(valor);
+    }
+  }
+
+  var texto = String(valor || "");
+  var match = texto.match(/\b(?:HTTP\D*)?([45][0-9]{2})\b/i);
+  if (match && match[1]) {
+    return Number(match[1]);
+  }
+  return null;
+}
+
+function formatarLinhaErroEnvio_(item, statusCode) {
+  var partes = [];
+  if (item.estudante) partes.push(item.estudante);
+  if (item.ra) partes.push("RA " + item.ra);
+  if (item.componente) partes.push(item.componente);
+  if (item.disciplina && !item.componente) partes.push(item.disciplina);
+  if (!partes.length && item.item_key) partes.push("item_key " + item.item_key);
+
+  var mensagem = item.mensagem || item.erro || item.resposta_api || "";
+  if (typeof mensagem === "object") {
+    try {
+      mensagem = JSON.stringify(mensagem);
+    } catch (errJson) {
+      mensagem = String(mensagem);
+    }
+  }
+  mensagem = limitarTexto_(String(mensagem || ""), 220);
+
+  return "HTTP " + statusCode + " - " + (partes.join(" | ") || "item sem contexto") + (mensagem ? (" -> " + mensagem) : "");
+}
+
+function limitarTexto_(texto, limite) {
+  var t = String(texto || "");
+  if (t.length <= limite) {
+    return t;
+  }
+  return t.substring(0, limite - 3) + "...";
+}
+
+function htmlParaTexto_(html) {
+  var texto = String(html || "")
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n")
+    .replace(/<\/tr>/gi, "\n")
+    .replace(/<li>/gi, "- ")
+    .replace(/<\/li>/gi, "\n")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'");
+
+  texto = texto.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  return texto || "Notificacao Madan ETL.";
+}
+
+function boolSimNao_(flag) {
+  return flag ? "sim" : "nao";
 }
 
 function resultadoBase_(item, idMatricula) {
@@ -1071,6 +1481,10 @@ function escaparHtml_(texto) {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
+}
+
+function escaparHtmlAtributo_(texto) {
+  return escaparHtml_(texto).replace(/"/g, "&quot;");
 }
 
 function extrairMensagemErro_(resposta) {
