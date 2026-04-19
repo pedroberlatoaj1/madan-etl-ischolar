@@ -99,7 +99,7 @@ class TestTabConfig:
         assert tab.nome_aba == "arte_Lenice"
 
     def test_nome_aba_truncado_31_chars(self):
-        tab = TabConfig("interpretacao de texto", "F1", "ProfessorNomeMuitoLongo", "Full Name")
+        tab = TabConfig("lingua portuguesa", "F1", "ProfessorNomeMuitoLongo", "Full Name")
         assert len(tab.nome_aba) <= 31
 
     def test_nome_aba_sem_acentos(self):
@@ -121,6 +121,7 @@ class TestDescobrirTabs:
         tabs = descobrir_tabs_para_turma(1, "A")
         disciplinas = {t.disciplina for t in tabs}
         assert "matematica" in disciplinas
+        assert "interpretacao de texto" not in disciplinas
 
     def test_tabs_deduplicadas(self):
         tabs = descobrir_tabs_para_turma(1, "A")

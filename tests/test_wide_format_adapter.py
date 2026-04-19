@@ -40,9 +40,9 @@ class TestParsearColunaDinamica:
         assert r.tipo_avaliacao == "Simulado"
 
     def test_disciplina_com_espacos(self):
-        r = parsear_coluna_dinamica("Interpretação de Texto - Frente Única - AV 2 Disc")
+        r = parsear_coluna_dinamica("Língua Portuguesa - Frente Única - AV 2 Disc")
         assert r is not None
-        assert r.disciplina == "Interpretação de Texto"
+        assert r.disciplina == "Língua Portuguesa"
         assert r.frente == "Frente Única"
         assert r.tipo_avaliacao == "AV 2 Disc"
 
@@ -164,7 +164,7 @@ class TestConstruirFrenteProfessor:
         assert construir_frente_professor("Educação Física", "Frente Única") == "educacao fisica"
 
     def test_disciplina_com_espacos(self):
-        assert construir_frente_professor("Interpretação de Texto", "Frente Única") == "interpretacao de texto"
+        assert construir_frente_professor("Língua Portuguesa", "Frente Única") == "lingua portuguesa"
 
     def test_frente_unica_com_encoding_quebrado(self):
         assert construir_frente_professor("Arte", "Frente ?nica") == "arte"
