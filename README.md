@@ -764,3 +764,97 @@ alias madan-deploy='/opt/madan-etl/app/deploy.sh'
 alias madan-status='systemctl status madan-webhook madan-worker --no-pager | head -20'
 alias madan-logs='sudo journalctl -u madan-worker -u madan-webhook -f'
 ```
+
+## 19. Disaster Recovery
+
+O historico operacional da VPS fica em `/opt/madan-etl/data` e precisa de backup
+diario. Isso inclui:
+
+- `jobs.sqlite3`
+- `validacoes_lote.db`
+- `aprovacoes_lote.db`
+- `lote_itens.db`
+- `envio_lote_audit.db`
+- `resultados_envio_lote.db`
+- `snapshots/`
+- mapas `mapa*.json` em `/opt/madan-etl/app`
+
+O script oficial de backup fica em `/opt/madan-etl/scripts/backup.sh` e usa:
+
+- `sqlite3 .backup` para gerar copias consistentes dos bancos SQLite abertos
+- `tar.gz` com nome `madan-backup-YYYY-MM-DD-HHMMSS.tar.gz`
+- destino local `/opt/madan-etl/backups/`
+- upload remoto via `rclone` para Google Drive
+- retencao simples de 14 backups locais e 14 remotos
+
+### 19.1 Setup unico na VPS
+
+Como o cron roda em `root` (`sudo crontab -e`), configure o `rclone` tambem com `sudo`:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y rclone sqlite3 mailutils
+sudo rclone config
+sudo rclone mkdir gdrive:madan-etl-backups
+sudo mkdir -p /opt/madan-etl/scripts /opt/madan-etl/backups
+sudo touch /var/log/madan-backup.log
+```
+
+Recomendacao:
+
+- criar o remote com nome `gdrive`
+- usar a pasta remota `gdrive:madan-etl-backups`
+- manter um MTA funcional para que `mail` ou `sendmail` consigam avisar falhas por email
+
+### 19.2 Cron diario
+
+Adicione no `sudo crontab -e`:
+
+```cron
+MAILTO=pedroberlatoaj1@gmail.com
+0 3 * * * /opt/madan-etl/scripts/backup.sh >> /var/log/madan-backup.log 2>&1
+```
+
+Observacoes:
+
+- o log fica em `/var/log/madan-backup.log`
+- o script tenta enviar notificacao por email em falha usando `mail` ou `sendmail`
+- falha de upload remoto nao apaga o `.tar.gz` local ja criado
+
+### 19.3 Restore em producao
+
+O restore oficial fica em `/opt/madan-etl/scripts/restore.sh` e:
+
+- exige um argumento com o caminho do `.tar.gz`
+- pede confirmacao explicita `yes`
+- para `madan-webhook` e `madan-worker`
+- restaura `/opt/madan-etl/data`
+- restaura os mapas `mapa*.json` em `/opt/madan-etl/app`
+- sobe os servicos novamente
+
+Exemplo:
+
+```bash
+sudo /opt/madan-etl/scripts/restore.sh /opt/madan-etl/backups/madan-backup-2026-04-19-030000.tar.gz
+```
+
+### 19.4 Teste trimestral de restore
+
+Uma vez por trimestre, valide um backup sem tocar no ambiente em producao:
+
+```bash
+LATEST_BACKUP="$(ls -1 /opt/madan-etl/backups/madan-backup-*.tar.gz | tail -n 1)"
+TMP_RESTORE_DIR="/tmp/madan-restore-check"
+rm -rf "$TMP_RESTORE_DIR"
+mkdir -p "$TMP_RESTORE_DIR"
+tar -xzf "$LATEST_BACKUP" -C "$TMP_RESTORE_DIR"
+sqlite3 "$TMP_RESTORE_DIR/data/jobs.sqlite3" "SELECT COUNT(*) AS total_jobs FROM jobs;"
+find "$TMP_RESTORE_DIR/data/snapshots" -maxdepth 1 -type f | wc -l
+```
+
+Registrar no teste:
+
+- nome do arquivo restaurado
+- contagem de jobs em `jobs.sqlite3`
+- contagem de snapshots restaurados
+- hora do teste e responsavel
