@@ -272,8 +272,8 @@ class TestGeracaoChaves:
 
 class TestIntegridadeRegistro:
     def test_total_professores_minimo(self):
-        """O PDF tem 37 professores — o registro deve ter pelo menos esse número."""
-        assert len(PROFESSORES) >= 37
+        """Registro deve ter pelo menos 36 professores ativos (2026-04-18: Lucas/Int.Tex removido)."""
+        assert len(PROFESSORES) >= 36
 
     def test_todos_tem_materia(self):
         for prof in PROFESSORES:
