@@ -1531,6 +1531,13 @@ function decodificarExpiracaoJwt_(token) {
     var payloadBytes = Utilities.base64Decode(payloadBase64);
     var payloadJson = Utilities.newBlob(payloadBytes).getDataAsString("UTF-8");
     var payload = JSON.parse(payloadJson);
+
+    // Token sem expiracao (tipo "integracao" do iScholar emite exp:null).
+    // Sinalizar com objeto especial para o caller saber que nao e erro.
+    if (payload && (payload.exp === null || payload.exp === undefined)) {
+      return { semExpiracao: true };
+    }
+
     var expSegundos = Number(payload && payload.exp);
     if (!isFinite(expSegundos) || expSegundos <= 0) {
       return null;
@@ -1565,6 +1572,16 @@ function verificarTokenIScholar_() {
   if (!token) {
     assunto = "\uD83D\uDEA8 EXPIRADO \u2014 Token iScholar inv\u00E1lido";
     statusResumo = "Token ausente em Script Properties (ISCHOLAR_TOKEN).";
+  } else if (expiracao && expiracao.semExpiracao === true) {
+    Logger.log(
+      "[verificarTokenIScholar_] token tipo integracao sem expiracao (exp:null). " +
+        "Estado normal — nenhum alerta enviado."
+    );
+    return {
+      alerta_enviado: false,
+      motivo: "token_sem_expiracao",
+      observacao: "Token de integracao iScholar emitido sem prazo (exp:null)."
+    };
   } else if (!expiracao) {
     assunto = "[Madan ETL] \u26A0\uFE0F N\u00E3o foi poss\u00EDvel ler expira\u00E7\u00E3o do token iScholar";
     statusResumo = "Formato do JWT inesperado, sem campo exp valido.";
