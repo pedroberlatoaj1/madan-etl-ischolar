@@ -84,6 +84,7 @@ def linha_madan_para_lancamentos(
         CAN_PONTO_EXTRA,
         CAN_RA,
         CAN_RECUPERACAO,
+        CAN_RECUPERACAO_FINAL,
         CAN_SIMULADO,
         CAN_TRIMESTRE,
         CAN_TURMA,
@@ -232,6 +233,47 @@ def linha_madan_para_lancamentos(
                     base_lancamento(
                         componente="recuperacao",
                         nota_original=raw_rec,
+                        status=StatusLancamento.ERRO_VALIDACAO,
+                        motivo_status=str(e),
+                    )
+                )
+
+    raw_rec_final = canon.componentes.get(CAN_RECUPERACAO_FINAL)
+    if not is_blank(raw_rec_final):
+        if tri_norm != "t3":
+            lancamentos.append(
+                base_lancamento(
+                    componente="recuperacao_final",
+                    nota_original=raw_rec_final,
+                    status=StatusLancamento.IGNORADO,
+                    motivo_status=MotivoStatus.REC_FINAL_FORA_T3,
+                    observacoes={
+                        "regra": "Recuperação final só existe no T3",
+                        "trimestre": tri_norm,
+                        "nota_informada": raw_rec_final,
+                    },
+                )
+            )
+        else:
+            try:
+                n_rec_final = validar_nota_0_10(raw_rec_final, allow_blank=False)
+                lancamentos.append(
+                    base_lancamento(
+                        componente="recuperacao_final",
+                        nota_original=raw_rec_final,
+                        nota_ajustada_0a10=n_rec_final,
+                        status=StatusLancamento.PRONTO,
+                        motivo_status=MotivoStatus.REC_FINAL_CONFIRMADA,
+                        observacoes={
+                            "regra": "Recuperação final (rendimento_anual < 60%)",
+                        },
+                    )
+                )
+            except Exception as e:
+                lancamentos.append(
+                    base_lancamento(
+                        componente="recuperacao_final",
+                        nota_original=raw_rec_final,
                         status=StatusLancamento.ERRO_VALIDACAO,
                         motivo_status=str(e),
                     )

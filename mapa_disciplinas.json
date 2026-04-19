@@ -1,11 +1,11 @@
 {
   "_schema": "mapa_disciplinas_v1",
-  "_descricao": "Mapa de disciplinas da planilha Madan para IDs do iScholar. Edite manualmente com os IDs reais confirmados pelo suporte ou pela interface do iScholar.",
+  "_descricao": "Mapa de disciplinas da planilha Madan para IDs do iScholar.",
   "_instrucoes": [
-    "Chaves: nome da disciplina exatamente como aparece na planilha Madan, sem acentos, em minúsculas.",
+    "Chaves: nome da disciplina como aparece na planilha Madan, normalizado pelo codigo.",
     "Valores: id_disciplina inteiro obtido do iScholar.",
-    "Para adicionar variações de nome (ex: 'mat', 'matematica', 'matemática'), adicione múltiplas chaves apontando para o mesmo id.",
-    "Recarregar o resolvedor após editar este arquivo."
+    "Gramatica, Literatura e Lingua Portuguesa apontam para o mesmo id_disciplina=29; a diferenca operacional fica no id_professor.",
+    "Recarregar o resolvedor apos editar este arquivo."
   ],
   "_fonte_siglas": "Lista de Professores por frente.pdf (Madan 2026)",
   "disciplinas": {
@@ -33,8 +33,8 @@
     "artes": 13,
     "redacao": 12,
     "red": 12,
-    "literatura": 91,
-    "lit": 91,
+    "literatura": 29,
+    "lit": 29,
     "sociologia": 11,
     "soc": 11,
     "filosofia": 10,
@@ -42,14 +42,11 @@
     "gramatica": 29,
     "gra": 29,
     "lingua portuguesa": 29,
-    "por": 29,
-    "interpretacao de texto": 96,
-    "interpretacao textual": 96,
-    "int tex": 96
+    "por": 29
   },
   "_avisos": [
-    "Disciplina 'xadrez' nao encontrada no iScholar — verificar se existe ou foi removida",
-    "Gramática e Língua Portuguesa são a mesma disciplina no iScholar (id=29, sigla POR). Madan usa 'gramatica', iScholar usa 'LÍNGUA PORTUGUESA'.",
-    "Verificar se 'interpretacao de texto' (id=96) e 'literatura' (id=91) ainda pertencem à grade das turmas — confirmar em próximo piloto."
+    "Disciplina 'xadrez' nao encontrada no iScholar - verificar se existe ou foi removida.",
+    "Gramatica, Literatura e Lingua Portuguesa sao a mesma disciplina no iScholar (id=29, sigla POR). Madan diferencia Gramatica/Literatura pelo professor.",
+    "Disciplina 'interpretacao de texto' removida em 2026-04-18 da grade ativa das turmas 1A/1B/2A/2B (sem professor atuante). Reincluir se voltar a fazer parte da grade."
   ]
 }

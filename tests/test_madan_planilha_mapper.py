@@ -30,6 +30,7 @@ def test_mapear_colunas_madan_reconhece_cabecalhos_da_planilha():
         "Observação relacionada ao ponto extra",
         "Nota Final",
         "Recuperação",
+        "Recuperação Final",
     ]
     mapping = m.mapear_colunas_madan(cols)
 
@@ -46,6 +47,7 @@ def test_mapear_colunas_madan_reconhece_cabecalhos_da_planilha():
     assert mapping["AV 3 (avaliação)"] == m.CAN_AV3_AVALIACAO
     assert mapping["Simulado"] == m.CAN_SIMULADO
     assert mapping["Ponto extra"] == m.CAN_PONTO_EXTRA
+    assert mapping["Recuperação Final"] == m.CAN_RECUPERACAO_FINAL
 
 
 def test_inferir_tem_nivelamento_heuristica():
@@ -64,12 +66,14 @@ def test_linha_wide_para_canonica_preserva_contexto_e_componentes():
         "Turma": "T1",
         "AV 1 (OBJ)": "8,0",
         "AV 3 (listas)": "7",
+        "Rec Final": "6,5",
     }
     canon = m.linha_wide_para_canonica(row)
     assert canon.contexto[m.CAN_ESTUDANTE] == "A"
     assert canon.contexto[m.CAN_TRIMESTRE] == "1"
     assert canon.componentes[m.CAN_AV1_OBJ] == "8,0"
     assert canon.componentes[m.CAN_AV3_LISTAS] == "7"
+    assert canon.componentes[m.CAN_RECUPERACAO_FINAL] == "6,5"
     assert canon.tem_nivelamento is True
 
 

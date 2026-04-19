@@ -124,6 +124,11 @@ class TestBuscaProfessor:
         assert any("IANA" in n for n in nomes)
         assert not any("JANAINA" in n for n in nomes)
 
+    def test_busca_professor_para_turma_filosofia_1a_pdf(self):
+        profs = buscar_professor_para_turma("filosofia", 1, "A")
+        nomes = [p.nome for p in profs]
+        assert any("EZIMAR BRAVIN" in n for n in nomes)
+
 
 # ---------------------------------------------------------------------------
 # ProfessorMadan — métodos

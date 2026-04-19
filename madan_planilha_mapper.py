@@ -43,6 +43,7 @@ CAN_NOTA_SEM_AV3 = "nota_sem_av3"
 CAN_NOTA_COM_AV3 = "nota_com_av3"
 CAN_NOTA_FINAL = "nota_final"
 CAN_RECUPERACAO = "recuperacao"
+CAN_RECUPERACAO_FINAL = "recuperacao_final"
 CAN_OBS_PONTO_EXTRA = "observacao_ponto_extra"
 
 
@@ -101,6 +102,7 @@ _register(CAN_NOTA_SEM_AV3, "nota sem a av 3", "nota sem av3", "nota_sem_av3")
 _register(CAN_NOTA_COM_AV3, "nota com a av 3", "nota com a av", "nota com av3", "nota_com_av3")
 _register(CAN_NOTA_FINAL, "nota final", "nota_final")
 _register(CAN_RECUPERACAO, "recuperacao", "recuperação", "rec")
+_register(CAN_RECUPERACAO_FINAL, "recuperacao final", "recuperação final", "rec final")
 _register(CAN_OBS_PONTO_EXTRA, "observacao relacionada ao ponto extra", "observação relacionada ao ponto extra", "obs ponto extra", "observacao_ponto_extra")
 
 
@@ -210,6 +212,7 @@ def linha_wide_para_canonica(row: Mapping[str, Any]) -> LinhaMadanCanonica:
         CAN_NOTA_COM_AV3: rn.get(CAN_NOTA_COM_AV3),
         CAN_NOTA_FINAL: rn.get(CAN_NOTA_FINAL),
         CAN_RECUPERACAO: rn.get(CAN_RECUPERACAO),
+        CAN_RECUPERACAO_FINAL: rn.get(CAN_RECUPERACAO_FINAL),
         CAN_OBS_PONTO_EXTRA: rn.get(CAN_OBS_PONTO_EXTRA),
     }
 
@@ -279,5 +282,6 @@ __all__ = [
     "CAN_NOTA_COM_AV3",
     "CAN_NOTA_FINAL",
     "CAN_RECUPERACAO",
+    "CAN_RECUPERACAO_FINAL",
     "CAN_OBS_PONTO_EXTRA",
 ]

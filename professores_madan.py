@@ -45,7 +45,6 @@ SIGLA_PARA_DISCIPLINA: dict[str, str] = {
     "ED FÍS":      "educacao fisica",
     "ED FIS":      "educacao fisica",
     "ART":         "arte",
-    "INT TEX":     "interpretacao de texto",
     "GRA":         "gramatica",
     "XAD":         "xadrez",
 }
@@ -324,12 +323,6 @@ PROFESSORES: list[ProfessorMadan] = [
         email="lucasbarroses@gmail.com",
     ),
     ProfessorMadan(
-        nome="LUCAS GOMES COSTA", apelido=None, materia_sigla="INT TEX",
-        turmas_1a=["•"], turmas_2a=["•"], turmas_3a=["•"], frentes_med=["•"],
-        frentes_ext=["•"], frentes_ita=["•"],
-        email="lucasgc12@gmail.com",
-    ),
-    ProfessorMadan(
         nome="MARCELO ALMEIDA MORETO", apelido="Moreto", materia_sigla="GEO",
         turmas_1a=["A"], turmas_2a=["B"], turmas_3a=[], frentes_med=[],
         frentes_ext=[], frentes_ita=[],
@@ -416,9 +409,23 @@ def _construir_indices() -> None:
         if primeiro_nome:
             primeiros_nomes.setdefault(primeiro_nome, []).append(prof)
 
+        disciplinas_indexadas: set[str] = set()
+
         disc = prof.disciplina_canonica
         if disc:
-            _INDICE_DISCIPLINA.setdefault(disc, []).append(prof)
+            disciplinas_indexadas.add(disc)
+
+        # Expande siglas compostas, como SOC/FIL/HIS, para que a mesma
+        # designação oficial alimente os lookups de Sociologia, Filosofia
+        # e História sem exigir duplicação manual no cadastro base.
+        if "/" in prof.materia_sigla:
+            for sigla in prof.materia_sigla.split("/"):
+                d = sigla_para_disciplina(sigla.strip())
+                if d:
+                    disciplinas_indexadas.add(d)
+
+        for disciplina in disciplinas_indexadas:
+            _INDICE_DISCIPLINA.setdefault(disciplina, []).append(prof)
 
     for primeiro_nome, professores in primeiros_nomes.items():
         if len(professores) == 1:

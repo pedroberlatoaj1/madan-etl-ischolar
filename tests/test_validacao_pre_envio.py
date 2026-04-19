@@ -21,8 +21,9 @@ Cobertura:
 
 import pytest
 
+from avaliacao_rules import StatusLancamento
 from transformador import linha_madan_para_lancamentos
-from validacao_pre_envio import validar_pre_envio_linha
+from validacao_pre_envio import _is_sendavel, validar_pre_envio_linha
 
 
 def _row_com_frente_professor(
@@ -486,3 +487,131 @@ def test_nome_explicito_invalido_continua_gerando_warning_legitimo():
         "professorinexistente" in str(aviso.get("details", {}).get("nome_extraido", "")).lower()
         for aviso in avisos_nao_encontrado
     )
+
+
+def test_is_sendavel_recuperacao_pronto_sem_peso_e_valor_ponderado():
+    lancamento = {
+        "status": StatusLancamento.PRONTO,
+        "subcomponente": None,
+        "componente": "recuperacao",
+        "nota_ajustada_0a10": 7.5,
+        "peso_avaliacao": None,
+        "valor_ponderado": None,
+    }
+
+    assert _is_sendavel(lancamento) is True
+
+
+def test_is_sendavel_recuperacao_pronto_sem_nota_retorna_false():
+    lancamento = {
+        "status": StatusLancamento.PRONTO,
+        "subcomponente": None,
+        "componente": "recuperacao",
+        "nota_ajustada_0a10": None,
+        "peso_avaliacao": None,
+        "valor_ponderado": None,
+    }
+
+    assert _is_sendavel(lancamento) is False
+
+
+def test_is_sendavel_recuperacao_ignorada_retorna_false():
+    lancamento = {
+        "status": StatusLancamento.IGNORADO,
+        "subcomponente": None,
+        "componente": "recuperacao",
+        "nota_ajustada_0a10": 6.0,
+        "peso_avaliacao": None,
+        "valor_ponderado": None,
+    }
+
+    assert _is_sendavel(lancamento) is False
+
+
+def test_is_sendavel_recuperacao_final_pronto_sem_peso_e_valor_ponderado():
+    lancamento = {
+        "status": StatusLancamento.PRONTO,
+        "subcomponente": None,
+        "componente": "recuperacao_final",
+        "nota_ajustada_0a10": 6.0,
+        "peso_avaliacao": None,
+        "valor_ponderado": None,
+    }
+
+    assert _is_sendavel(lancamento) is True
+
+
+def test_is_sendavel_recuperacao_final_pronto_sem_nota_retorna_false():
+    lancamento = {
+        "status": StatusLancamento.PRONTO,
+        "subcomponente": None,
+        "componente": "recuperacao_final",
+        "nota_ajustada_0a10": None,
+        "peso_avaliacao": None,
+        "valor_ponderado": None,
+    }
+
+    assert _is_sendavel(lancamento) is False
+
+
+@pytest.mark.parametrize("componente", ["av1", "av2", "av3", "simulado"])
+@pytest.mark.parametrize(
+    ("peso_avaliacao", "valor_ponderado"),
+    [
+        (None, 7.5),
+        (12.0, None),
+    ],
+)
+def test_is_sendavel_componentes_ponderados_continuam_exigindo_peso_e_valor(
+    componente: str,
+    peso_avaliacao: float | None,
+    valor_ponderado: float | None,
+):
+    lancamento = {
+        "status": StatusLancamento.PRONTO,
+        "subcomponente": None,
+        "componente": componente,
+        "nota_ajustada_0a10": 7.5,
+        "peso_avaliacao": peso_avaliacao,
+        "valor_ponderado": valor_ponderado,
+    }
+
+    assert _is_sendavel(lancamento) is False
+
+
+def test_validacao_pre_envio_aceita_recuperacao_sem_peso_e_valor_ponderado():
+    row = {
+        "Estudante": "Aluno Recuperacao",
+        "Trimestre": "1",
+        "Disciplina": "Arte",
+        "Frente - Professor": "Frente Única",
+        "Turma": "2B",
+        "Recuperação": "10",
+    }
+    lancs = linha_madan_para_lancamentos(row, linha_origem=49)
+    res = validar_pre_envio_linha(row_wide=row, lancamentos=lancs)
+
+    assert res["status_geral"] == "apto_com_avisos"
+    assert res["lancamentos_com_erro"] == []
+    rec = next(l for l in res["lancamentos_validos"] if l["componente"] == "recuperacao")
+    assert rec["sendavel"] is True
+
+
+def test_validacao_pre_envio_aceita_recuperacao_final_sem_peso_e_valor_ponderado():
+    row = {
+        "Estudante": "Aluno Recuperacao Final",
+        "Trimestre": "T3",
+        "Disciplina": "Arte",
+        "Frente - Professor": "Frente Única",
+        "Turma": "2B",
+        "Recuperação Final": "6",
+    }
+    lancs = linha_madan_para_lancamentos(row, linha_origem=50)
+    res = validar_pre_envio_linha(row_wide=row, lancamentos=lancs)
+
+    assert res["status_geral"] == "apto_com_avisos"
+    assert res["lancamentos_com_erro"] == []
+    rec_final = next(
+        l for l in res["lancamentos_validos"] if l["componente"] == "recuperacao_final"
+    )
+    assert rec_final["sendavel"] is True

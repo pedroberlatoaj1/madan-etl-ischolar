@@ -94,16 +94,22 @@ def _normalizar_texto(s: str) -> str:
     return "".join(c for c in n if unicodedata.category(c) != "Mn")
 
 
+def _compactar_texto(s: str) -> str:
+    """Mantém só letras/números para matching tolerante a ruído de encoding."""
+    return re.sub(r"[^a-z0-9]+", "", _normalizar_texto(s))
+
+
 MAPA_TIPO_AVALIACAO: dict[str, str] = {
-    "av 1 obj":       "AV 1 (OBJ)",
-    "av 1 disc":      "AV 1 (DISC)",
-    "av 2 obj":       "AV 2 (OBJ)",
-    "av 2 disc":      "AV 2 (DISC)",
-    "av 3 listas":    "AV 3 (listas)",
-    "av 3 avaliacao": "AV 3 (avaliação)",
-    "simulado":       "Simulado",
-    "ponto extra":    "Ponto extra",
-    "recuperacao":    "Recuperação",
+    "av 1 obj":           "AV 1 (OBJ)",
+    "av 1 disc":          "AV 1 (DISC)",
+    "av 2 obj":           "AV 2 (OBJ)",
+    "av 2 disc":          "AV 2 (DISC)",
+    "av 3 listas":        "AV 3 (listas)",
+    "av 3 avaliacao":     "AV 3 (avaliação)",
+    "simulado":           "Simulado",
+    "ponto extra":        "Ponto extra",
+    "recuperacao final":  "Recuperação Final",
+    "recuperacao":        "Recuperação",
 }
 """Mapa de tipo_avaliacao (normalizado, sem acento) → nome de coluna no template antigo."""
 
@@ -122,7 +128,33 @@ def mapear_tipo_avaliacao(tipo: str) -> str | None:
         return resultado
     # Tenta com underscores trocados por espaços
     chave_alt = chave.replace("_", " ")
-    return MAPA_TIPO_AVALIACAO.get(chave_alt)
+    resultado = MAPA_TIPO_AVALIACAO.get(chave_alt)
+    if resultado:
+        return resultado
+
+    # Fallback tolerante a mojibake/replacement chars vindos de caminhos
+    # externos (ex.: "Recupera??o"), desde que a intenção permaneça clara.
+    chave_compacta = _compactar_texto(tipo)
+    mapa_compacto = {
+        "av1obj": "AV 1 (OBJ)",
+        "av1disc": "AV 1 (DISC)",
+        "av2obj": "AV 2 (OBJ)",
+        "av2disc": "AV 2 (DISC)",
+        "av3listas": "AV 3 (listas)",
+        "av3avaliacao": "AV 3 (avaliação)",
+        "simulado": "Simulado",
+        "pontoextra": "Ponto extra",
+        "recuperacaofinal": "Recuperação Final",
+        "recuperacao": "Recuperação",
+    }
+    resultado = mapa_compacto.get(chave_compacta)
+    if resultado:
+        return resultado
+    if chave_compacta.startswith("recuperacaofinal"):
+        return "Recuperação Final"
+    if chave_compacta.startswith("recuper"):
+        return "Recuperação"
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -150,9 +182,10 @@ def construir_frente_professor(disciplina: str, frente: str) -> str:
     else:
         identificador = "unica"
 
-    if identificador == "unica":
+    identificador_limpo = re.sub(r"[^a-z0-9]+", "", identificador)
+    if identificador_limpo in {"", "unica", "nica"} or identificador_limpo.endswith("nica"):
         return disc_norm
-    return f"{disc_norm} {identificador}"
+    return f"{disc_norm} {identificador_limpo}"
 
 
 # ---------------------------------------------------------------------------

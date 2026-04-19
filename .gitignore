@@ -3,6 +3,8 @@
 
 # Bancos de dados locais (evita subir dados reais ou de testes)
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
 
 # Logs
@@ -13,6 +15,47 @@ __pycache__/
 *.pyc
 .pytest_cache/
 
-# Planilhas com dados reais (se quiser subir só o modelo, deixe as com dados fora)
+# Diretórios de execução temporária / experimentos do Codex
+tmp_*/
+tmp_pytest_*/
+codex_manual_tmp*/
+codex_*_tmp/
+
+# Scripts ad-hoc temporários
+tmp_*.py
 tmp_*.csv
+tmp_*.xlsx
+discovery_*.txt
+
+# Planilhas com dados reais (NUNCA subir nome/RA de aluno real)
 *com_erros*.xlsx
+planilha_madan_*preenchida*.xlsx
+planilha_piloto_*.xlsx
+1*_T*_2026.xlsx
+2*_T*_2026.xlsx
+3*_T*_2026.xlsx
+madan_2026_*.xlsx
+planilhas_geradas/
+
+# Snapshots e audit trail (dados sensíveis de produção)
+snapshots/
+data/snapshots/
+resultados_envio_lote.*
+
+# Relatórios de cadastro (contêm dados de alunos)
+relatorio_cadastro_*
+
+# Rosters reais (contêm RA + nome de aluno)
+roster_teste*.csv
+roster_*.csv
+!roster_exemplo.csv
+
+# Worktrees e settings locais do Claude Code
+.claude/worktrees/
+.claude/settings.local.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store

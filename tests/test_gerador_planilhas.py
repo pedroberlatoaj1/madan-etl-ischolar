@@ -252,6 +252,11 @@ class TestDescobrirGruposWide:
         grupos = descobrir_grupos_wide(2, "B")
         assert len(grupos) > 0
 
+    def test_filosofia_aparece_nos_grupos_do_primeiro_ano(self):
+        grupos = descobrir_grupos_wide(1, "A")
+        disciplinas = {d for d, _ in grupos}
+        assert "Filosofia" in disciplinas
+
 
 # ---------------------------------------------------------------------------
 # TestConstruirCabecalhoWide — NOVO
@@ -272,6 +277,12 @@ class TestConstruirCabecalhoWide:
 
     def test_largura_total_correta(self, grupos_simples):
         cab = construir_cabecalho_wide(grupos_simples)
+        n_tipos_sem_rec_final = len(TIPOS_AVALIACAO_WIDE) - 1
+        n_esperado = len(COLUNAS_FIXAS_WIDE) + len(grupos_simples) * n_tipos_sem_rec_final
+        assert len(cab) == n_esperado
+
+    def test_largura_total_correta_no_t3_com_recuperacao_final(self, grupos_simples):
+        cab = construir_cabecalho_wide(grupos_simples, incluir_recuperacao_final=True)
         n_esperado = len(COLUNAS_FIXAS_WIDE) + len(grupos_simples) * len(TIPOS_AVALIACAO_WIDE)
         assert len(cab) == n_esperado
 
@@ -337,6 +348,14 @@ class TestConstruirCabecalhoWide:
     def test_sem_grupos_retorna_so_fixas(self):
         cab = construir_cabecalho_wide([])
         assert cab == COLUNAS_FIXAS_WIDE
+
+    def test_t3_inclui_recuperacao_final_quando_solicitado(self, grupos_simples):
+        cab = construir_cabecalho_wide(grupos_simples, incluir_recuperacao_final=True)
+        assert "Matemática - Frente A - Recuperação Final" in cab
+
+    def test_t1_t2_nao_incluem_recuperacao_final_por_padrao(self, grupos_simples):
+        cab = construir_cabecalho_wide(grupos_simples)
+        assert "Matemática - Frente A - Recuperação Final" not in cab
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +478,22 @@ class TestGerarPlanilha:
         grupos = descobrir_grupos_wide(1, "A")
         # 3 alunos × N grupos de disciplina/frente
         assert len(df_virtual) == len(alunos_1a) * len(grupos)
+
+    def test_planilha_t3_inclui_coluna_recuperacao_final(self, alunos_1a: list[Aluno], tmp_path: Path):
+        filepath = gerar_planilha_turma("1A", "T3", 2026, alunos_1a, tmp_path)
+        wb = openpyxl.load_workbook(str(filepath))
+        ws = wb["Notas"]
+        headers = [ws.cell(row=1, column=i).value for i in range(1, ws.max_column + 1)]
+        assert any(str(h).endswith("Recuperação Final") for h in headers)
+        wb.close()
+
+    def test_planilha_t1_nao_inclui_coluna_recuperacao_final(self, alunos_1a: list[Aluno], tmp_path: Path):
+        filepath = gerar_planilha_turma("1A", "T1", 2026, alunos_1a, tmp_path)
+        wb = openpyxl.load_workbook(str(filepath))
+        ws = wb["Notas"]
+        headers = [ws.cell(row=1, column=i).value for i in range(1, ws.max_column + 1)]
+        assert not any(str(h).endswith("Recuperação Final") for h in headers)
+        wb.close()
 
 
 # ---------------------------------------------------------------------------

@@ -94,7 +94,6 @@ DISCIPLINA_DISPLAY: dict[str, str] = {
     "gramatica":              "Gramática",
     "historia":               "História",
     "ingles":                 "Inglês",
-    "interpretacao de texto": "Interpretação de Texto",
     "literatura":             "Literatura",
     "matematica":             "Matemática",
     "quimica":                "Química",
@@ -114,6 +113,7 @@ TIPOS_AVALIACAO_WIDE: list[str] = [
     "Simulado",
     "Ponto Extra",
     "Recuperação",
+    "Recuperação Final",
 ]
 """
 Sufixos de tipo de avaliação para as colunas dinâmicas.
@@ -125,6 +125,7 @@ deve bater exatamente com uma chave de MAPA_TIPO_AVALIACAO:
     "AV 3 Listas" → "av 3 listas" → "AV 3 (listas)"
     "AV 3 Avaliacao" → "av 3 avaliacao" → "AV 3 (avaliação)"
     "Recuperação" → "recuperacao" → "Recuperação"
+    "Recuperação Final" → "recuperacao final" → "Recuperação Final"
 """
 
 COLUNAS_FIXAS_WIDE = ["Estudante", "RA", "Turma", "Trimestre"]
@@ -235,7 +236,17 @@ def descobrir_grupos_wide(serie: int, turma_letra: str) -> list[tuple[str, str]]
     return grupos
 
 
-def construir_cabecalho_wide(grupos: list[tuple[str, str]]) -> list[str]:
+def _tipos_avaliacao_cabecalho(*, incluir_recuperacao_final: bool) -> list[str]:
+    if incluir_recuperacao_final:
+        return list(TIPOS_AVALIACAO_WIDE)
+    return [tipo for tipo in TIPOS_AVALIACAO_WIDE if tipo != "Recuperação Final"]
+
+
+def construir_cabecalho_wide(
+    grupos: list[tuple[str, str]],
+    *,
+    incluir_recuperacao_final: bool = False,
+) -> list[str]:
     """
     Constrói a lista completa de nomes de colunas para o formato wide.
 
@@ -249,8 +260,11 @@ def construir_cabecalho_wide(grupos: list[tuple[str, str]]) -> list[str]:
     em wide_format_adapter.py reconhece.
     """
     cabecalho = list(COLUNAS_FIXAS_WIDE)
+    tipos_avaliacao = _tipos_avaliacao_cabecalho(
+        incluir_recuperacao_final=incluir_recuperacao_final
+    )
     for disc_display, frente_display in grupos:
-        for tipo in TIPOS_AVALIACAO_WIDE:
+        for tipo in tipos_avaliacao:
             cabecalho.append(f"{disc_display} - {frente_display} - {tipo}")
     return cabecalho
 
@@ -433,7 +447,10 @@ def gerar_planilha_turma(
             f"turma {turma!r} (série {serie}, letra {turma_letra})"
         )
 
-    cabecalho = construir_cabecalho_wide(grupos)
+    cabecalho = construir_cabecalho_wide(
+        grupos,
+        incluir_recuperacao_final=str(trimestre).strip().upper() == "T3",
+    )
 
     wb = openpyxl.Workbook()
     default = wb.active
@@ -554,10 +571,13 @@ def gerar_workbook_anual(
         if not grupos:
             continue
 
-        cabecalho = construir_cabecalho_wide(grupos)
         alunos_turma = alunos_por_turma.get(turma, [])
 
         for trimestre in trimestres_efetivos:
+            cabecalho = construir_cabecalho_wide(
+                grupos,
+                incluir_recuperacao_final=trimestre == "T3",
+            )
             titulo_aba = f"{turma}_{trimestre}"          # ex: "1A_T1"
             _criar_aba_notas_wide(
                 wb=wb,

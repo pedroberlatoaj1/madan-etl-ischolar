@@ -63,6 +63,11 @@ class TestParsearColunaDinamica:
         assert r is not None
         assert r.tipo_avaliacao == "Recuperação"
 
+    def test_recuperacao_final(self):
+        r = parsear_coluna_dinamica("História - Frente A - Recuperação Final")
+        assert r is not None
+        assert r.tipo_avaliacao == "Recuperação Final"
+
     def test_coluna_fixa_retorna_none(self):
         assert parsear_coluna_dinamica("Estudante") is None
         assert parsear_coluna_dinamica("RA") is None
@@ -112,6 +117,8 @@ class TestMapearTipoAvaliacao:
         ("AV 3 Avaliacao", "AV 3 (avaliação)"),
         ("Simulado", "Simulado"),
         ("Ponto Extra", "Ponto extra"),
+        ("Recuperação Final", "Recuperação Final"),
+        ("Recuperacao Final", "Recuperação Final"),
         ("Recuperação", "Recuperação"),
         ("Recuperacao", "Recuperação"),
     ])
@@ -128,6 +135,15 @@ class TestMapearTipoAvaliacao:
 
     def test_whitespace(self):
         assert mapear_tipo_avaliacao("  AV 1 Obj  ") == "AV 1 (OBJ)"
+
+    def test_tolerancia_a_encoding_quebrado_em_recuperacao(self):
+        assert mapear_tipo_avaliacao("Recupera??o") == "Recuperação"
+
+    def test_tolerancia_a_header_compactado_em_recuperacao_final(self):
+        assert mapear_tipo_avaliacao("recuperacaofinal") == "Recuperação Final"
+
+    def test_recuperacao_final_nao_cai_no_fallback_de_recuperacao(self):
+        assert mapear_tipo_avaliacao("Recuperação Final") != "Recuperação"
 
 
 # =========================================================================
@@ -149,6 +165,9 @@ class TestConstruirFrenteProfessor:
 
     def test_disciplina_com_espacos(self):
         assert construir_frente_professor("Interpretação de Texto", "Frente Única") == "interpretacao de texto"
+
+    def test_frente_unica_com_encoding_quebrado(self):
+        assert construir_frente_professor("Arte", "Frente ?nica") == "arte"
 
     def test_remove_acentos(self):
         assert construir_frente_professor("Química", "Frente A") == "quimica a"
@@ -327,6 +346,47 @@ class TestDespivotar:
         assert len(linhas) == 1
         assert linhas[0]["AV 1 (OBJ)"] is None
         assert linhas[0]["AV 1 (DISC)"] == 5.0
+
+    def test_recuperacao_com_header_degradado_ainda_e_mapeada(self):
+        colunas = [
+            "Estudante", "RA", "Turma", "Trimestre",
+            "Arte - Frente ?nica - Recupera??o",
+        ]
+        fixas, grupos = _classificar_colunas(colunas)
+        row = {
+            "Estudante": "Maria",
+            "RA": "5678",
+            "Turma": "2B",
+            "Trimestre": "2",
+            "Arte - Frente ?nica - Recupera??o": 10,
+        }
+
+        linhas = despivotar_linha_wide(row, fixas, grupos)
+
+        assert len(linhas) == 1
+        assert linhas[0]["Disciplina"] == "Arte"
+        assert linhas[0]["Frente - Professor"] == "arte - lenice"
+        assert linhas[0]["Recuperação"] == 10
+
+    def test_recuperacao_final_com_header_compactado_ainda_e_mapeada(self):
+        colunas = [
+            "Estudante", "RA", "Turma", "Trimestre",
+            "Arte - Frente ?nica - recuperacaofinal",
+        ]
+        fixas, grupos = _classificar_colunas(colunas)
+        row = {
+            "Estudante": "Maria",
+            "RA": "5678",
+            "Turma": "2B",
+            "Trimestre": "3",
+            "Arte - Frente ?nica - recuperacaofinal": 6.5,
+        }
+
+        linhas = despivotar_linha_wide(row, fixas, grupos)
+
+        assert len(linhas) == 1
+        assert linhas[0]["Recuperação Final"] == 6.5
+        assert "Recuperação" not in linhas[0]
 
 
 # =========================================================================

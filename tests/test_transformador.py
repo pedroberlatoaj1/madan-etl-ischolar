@@ -336,3 +336,118 @@ def test_primeira_e_segunda_serie_nao_bloqueadas():
 
         bloqueados = [l for l in lancs if l.get("status") == "bloqueado"]
         assert bloqueados == [], f"Turma {turma} não deveria ser bloqueada"
+
+
+def test_linha_madan_para_lancamentos_recuperacao_t1_pronta_sem_peso():
+    row = {
+        "Estudante": "Aluno Recuperacao T1",
+        "RA": "RAREC1",
+        "Turma": "1A",
+        "Trimestre": "1",
+        "Disciplina": "Matemática",
+        "Recuperação": "7.5",
+        "AV 1 (OBJ)": "3",
+        "AV 1 (DISC)": "2",
+    }
+
+    lancs = linha_madan_para_lancamentos(row, linha_origem=20)
+    rec = [l for l in lancs if l["componente"] == "recuperacao"]
+
+    assert len(rec) == 1
+    assert rec[0]["status"] == "pronto"
+    assert rec[0]["nota_ajustada_0a10"] == 7.5
+    assert rec[0]["peso_avaliacao"] is None
+    assert rec[0]["valor_ponderado"] is None
+
+
+def test_linha_madan_para_lancamentos_recuperacao_t3_ignorada():
+    row = {
+        "Estudante": "Aluno Recuperacao T3",
+        "RA": "RAREC3",
+        "Turma": "2B",
+        "Trimestre": "3",
+        "Disciplina": "Física",
+        "Recuperação": "8.0",
+        "AV 1 (OBJ)": "3",
+        "AV 1 (DISC)": "4",
+    }
+
+    lancs = linha_madan_para_lancamentos(row, linha_origem=21)
+    rec = [l for l in lancs if l["componente"] == "recuperacao"]
+
+    assert len(rec) == 1
+    assert rec[0]["status"] == "ignorado"
+    assert "recuperacao_trimestral_nao_existe_para_t3" in rec[0]["motivo_status"]
+
+
+def test_linha_madan_para_lancamentos_recuperacao_final_t3_pronta():
+    row = {
+        "Estudante": "Aluno Rec Final T3",
+        "RA": "RARECFINAL3",
+        "Turma": "2B",
+        "Trimestre": "T3",
+        "Disciplina": "Arte",
+        "Recuperação Final": "6.0",
+    }
+
+    lancs = linha_madan_para_lancamentos(row, linha_origem=22)
+    rec_final = [l for l in lancs if l["componente"] == "recuperacao_final"]
+
+    assert len(rec_final) == 1
+    assert rec_final[0]["status"] == "pronto"
+    assert rec_final[0]["nota_ajustada_0a10"] == 6.0
+    assert rec_final[0]["peso_avaliacao"] is None
+    assert rec_final[0]["valor_ponderado"] is None
+    assert rec_final[0]["motivo_status"] == "recuperacao_final_confirmada"
+
+
+def test_linha_madan_para_lancamentos_recuperacao_final_t1_ignorada():
+    row = {
+        "Estudante": "Aluno Rec Final T1",
+        "RA": "RARECFINAL1",
+        "Turma": "1A",
+        "Trimestre": "T1",
+        "Disciplina": "Arte",
+        "Recuperação Final": "5.0",
+    }
+
+    lancs = linha_madan_para_lancamentos(row, linha_origem=23)
+    rec_final = [l for l in lancs if l["componente"] == "recuperacao_final"]
+
+    assert len(rec_final) == 1
+    assert rec_final[0]["status"] == "ignorado"
+    assert rec_final[0]["motivo_status"] == "recuperacao_final_fora_do_t3"
+
+
+def test_linha_madan_para_lancamentos_t3_sem_recuperacao_final_nao_gera_componente():
+    row = {
+        "Estudante": "Aluno Sem Rec Final",
+        "RA": "RASEMRECFINAL",
+        "Turma": "2B",
+        "Trimestre": "T3",
+        "Disciplina": "Arte",
+        "AV 1 (OBJ)": "4",
+        "AV 1 (DISC)": "5",
+    }
+
+    lancs = linha_madan_para_lancamentos(row, linha_origem=24)
+    rec_final = [l for l in lancs if l["componente"] == "recuperacao_final"]
+
+    assert rec_final == []
+
+
+def test_linha_madan_para_lancamentos_recuperacao_final_t3_invalida():
+    row = {
+        "Estudante": "Aluno Rec Final Invalida",
+        "RA": "RARECINVALIDA",
+        "Turma": "2B",
+        "Trimestre": "T3",
+        "Disciplina": "Arte",
+        "Recuperação Final": "11",
+    }
+
+    lancs = linha_madan_para_lancamentos(row, linha_origem=25)
+    rec_final = [l for l in lancs if l["componente"] == "recuperacao_final"]
+
+    assert len(rec_final) == 1
+    assert rec_final[0]["status"] == "erro_validacao"

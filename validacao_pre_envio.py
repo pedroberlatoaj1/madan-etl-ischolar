@@ -116,17 +116,24 @@ def _is_sendavel(l: Mapping[str, Any]) -> bool:
     """
     Heurística de "potencialmente enviável" nesta etapa (sem iScholar):
       - status == StatusLancamento.PRONTO
-      - componente em {av1, av2, av3, simulado}
+      - componente em {av1, av2, av3, simulado, recuperacao, recuperacao_final}
       - subcomponente None  →  lançamento consolidado
-      - peso_avaliacao e valor_ponderado presentes
+      - AV1/AV2/AV3/Simulado exigem peso_avaliacao e valor_ponderado
+      - Recuperacao trimestral/final exigem apenas nota_ajustada_0a10
     """
     if l.get("status") != StatusLancamento.PRONTO:
         return False
     if l.get("subcomponente") is not None:
         return False
-    if l.get("componente") not in {"av1", "av2", "av3", "simulado"}:
-        return False
-    return (l.get("peso_avaliacao") is not None) and (l.get("valor_ponderado") is not None)
+    componente = l.get("componente")
+    if componente in {"av1", "av2", "av3", "simulado"}:
+        return (l.get("peso_avaliacao") is not None) and (l.get("valor_ponderado") is not None)
+    if componente in {"recuperacao", "recuperacao_final"}:
+        # A ponderacao da recuperacao e feita pelo iScholar. O pipeline so
+        # transporta a nota bruta da prova, por isso peso_avaliacao e
+        # valor_ponderado ficam ausentes por design nesse componente.
+        return l.get("nota_ajustada_0a10") is not None
+    return False
 
 
 def _chave_duplicidade(l: Mapping[str, Any]) -> tuple[Any, ...]:
@@ -204,7 +211,10 @@ def _validar_campos_obrigatorios_lancamento(l: Mapping[str, Any]) -> list[Issue]
 
     # Campos adicionais exigidos apenas para lançamentos sendáveis.
     if _is_sendavel(l):
-        for campo in ("nota_ajustada_0a10", "peso_avaliacao", "valor_ponderado"):
+        campos_sendaveis = ("nota_ajustada_0a10",)
+        if l.get("componente") in {"av1", "av2", "av3", "simulado"}:
+            campos_sendaveis += ("peso_avaliacao", "valor_ponderado")
+        for campo in campos_sendaveis:
             if l.get(campo) is None:
                 issues.append(
                     Issue("erro", "CAMPO_OBRIGATORIO_AUSENTE",

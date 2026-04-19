@@ -166,6 +166,10 @@ MAPA_AVAL = [
     {"componente": "av1", "trimestre": "2", "id_avaliacao": 202},
     {"componente": "av2", "trimestre": "1", "id_avaliacao": 211},
     {"componente": "simulado",              "id_avaliacao": 230},  # sem trimestre
+    {"componente": "recuperacao", "trimestre": "1", "id_avaliacao": 107},
+    {"componente": "recuperacao", "trimestre": "2", "id_avaliacao": 108},
+    {"componente": "recuperacao", "trimestre": "3", "id_avaliacao": 109},
+    {"componente": "recuperacao_final", "id_avaliacao": 110},
 ]
 
 MAPA_PROF = {
@@ -202,6 +206,7 @@ def _lancamento(
     ra: str = "12345",
     cpf: str = None,
     id_aluno: int = None,
+    turma: str = "T1",
     disciplina: str = "Matemática",
     componente: str = "av1",
     trimestre: str = "1",
@@ -210,7 +215,7 @@ def _lancamento(
 ) -> dict:
     l = {
         "estudante":          "Ana Silva",
-        "turma":              "T1",
+        "turma":              turma,
         "disciplina":         disciplina,
         "componente":         componente,
         "trimestre":          trimestre,
@@ -471,6 +476,59 @@ def test_avaliacao_fallback_trimestre_desconhecido():
     assert resultado.id_avaliacao == 230
 
 
+def test_avaliacao_recuperacao_t1_resolve_id_107():
+    r, _ = _resolvedor()
+    resultado = r.resolver_ids(_lancamento(componente="recuperacao", trimestre="t1"))
+
+    assert resultado.id_avaliacao == 107
+    assert resultado.resolvido
+
+
+def test_avaliacao_recuperacao_t2_resolve_id_108():
+    r, _ = _resolvedor()
+    resultado = r.resolver_ids(_lancamento(componente="recuperacao", trimestre="t2"))
+
+    assert resultado.id_avaliacao == 108
+    assert resultado.resolvido
+
+
+def test_avaliacao_recuperacao_t3_bloqueia_com_mensagem_clara():
+    r, _ = _resolvedor()
+    resultado = r.resolver_ids(_lancamento(componente="recuperacao", trimestre="t3"))
+
+    assert resultado.id_avaliacao is None
+    assert not resultado.resolvido
+    assert any(
+        "recuperacao trimestral T3 nao existe" in erro
+        and "recuperacao_final" in erro
+        for erro in resultado.erros
+    )
+    assert resultado.rastreabilidade["fonte_resolucao"]["id_avaliacao"] == \
+        "nao_resolvido:regra_recuperacao_t3"
+
+
+def test_avaliacao_recuperacao_final_t3_resolve_id_110():
+    r, _ = _resolvedor()
+    resultado = r.resolver_ids(_lancamento(componente="recuperacao_final", trimestre="t3"))
+
+    assert resultado.id_avaliacao == 110
+    assert resultado.resolvido
+
+
+def test_avaliacao_recuperacao_final_t1_bloqueia_com_mensagem_clara():
+    r, _ = _resolvedor()
+    resultado = r.resolver_ids(_lancamento(componente="recuperacao_final", trimestre="t1"))
+
+    assert resultado.id_avaliacao is None
+    assert not resultado.resolvido
+    assert any(
+        "recuperacao_final so existe no T3" in erro
+        for erro in resultado.erros
+    )
+    assert resultado.rastreabilidade["fonte_resolucao"]["id_avaliacao"] == \
+        "nao_resolvido:regra_recuperacao_final_fora_t3"
+
+
 # ---------------------------------------------------------------------------
 # 7. Avaliação ausente no DE-PARA
 # ---------------------------------------------------------------------------
@@ -729,6 +787,52 @@ def test_fluxo_envio_dry_run_com_resolvedor_hibrido():
     assert res.itens[0].id_avaliacao == 201
 
 
+def test_fluxo_envio_dry_run_recuperacao_t1_usa_mesmo_payload_de_nota():
+    from aprovacao_lote import EstadoAprovacaoLote
+    from envio_lote import enviar_lote
+    from lote_itens_store import LoteItensStore
+
+    resolvedor, cliente = _resolvedor()
+
+    lancamento = {
+        "estudante": "Ana Silva",
+        "turma": "T1",
+        "disciplina": "Matemática",
+        "componente": "recuperacao",
+        "trimestre": "1",
+        "nota_ajustada_0a10": 7.5,
+        "sendavel": True,
+        "hash_conteudo": "dryhybridrec001",
+        "linha_origem": 7,
+        "ra": "RA997",
+    }
+
+    lote_id = "dry-hybrid-rec"
+    estado = EstadoAprovacaoLote(
+        lote_id=lote_id,
+        status="aprovado_para_envio",
+        elegivel_para_aprovacao=True,
+        resumo_atual={},
+    )
+    itens_store = LoteItensStore(":memory:")
+    itens_store.salvar_itens(lote_id, [lancamento])
+
+    res = enviar_lote(
+        estado=estado,
+        itens_store=itens_store,
+        cliente=cliente,
+        resolvedor=resolvedor,
+        dry_run=True,
+    )
+
+    assert res.sucesso is True
+    assert res.total_dry_run == 1
+    assert res.itens[0].status == "dry_run"
+    assert res.itens[0].id_avaliacao == 107
+    assert cliente.chamadas_lancar_nota[0]["id_avaliacao"] == 107
+    assert cliente.chamadas_lancar_nota[0]["valor_bruta"] == 7.5
+
+
 def test_fluxo_envio_dry_run_com_erro_resolucao_disciplina():
     """dry_run com disciplina ausente no mapa → erro_resolucao, não envia."""
     from aprovacao_lote import EstadoAprovacaoLote
@@ -905,6 +1009,31 @@ def test_lookup_avaliacao_fallback_sem_trimestre():
 def test_lookup_avaliacao_nao_encontrado():
     resultado = _lookup_avaliacao(MAPA_AVAL, "tarefa", "1")
     assert resultado is None
+
+
+def test_lookup_avaliacao_recuperacao_t1():
+    resultado = _lookup_avaliacao(MAPA_AVAL, "recuperacao", "t1")
+    assert resultado == 107
+
+
+def test_lookup_avaliacao_recuperacao_t2():
+    resultado = _lookup_avaliacao(MAPA_AVAL, "recuperacao", "t2")
+    assert resultado == 108
+
+
+def test_lookup_avaliacao_recuperacao_t3_levanta_erro_explicito():
+    with pytest.raises(ValueError, match="recuperacao trimestral T3 nao existe"):
+        _lookup_avaliacao(MAPA_AVAL, "recuperacao", "t3")
+
+
+def test_lookup_avaliacao_recuperacao_final_t3():
+    resultado = _lookup_avaliacao(MAPA_AVAL, "recuperacao_final", "t3")
+    assert resultado == 110
+
+
+def test_lookup_avaliacao_recuperacao_final_t1_levanta_erro_explicito():
+    with pytest.raises(ValueError, match="recuperacao_final so existe no T3"):
+        _lookup_avaliacao(MAPA_AVAL, "recuperacao_final", "t1")
 
 
 def test_extrair_identificador_aluno_ra():
@@ -1090,3 +1219,38 @@ def test_integracao_resolvedor_client_lancamento_completo():
     assert cliente.chamadas_buscar_aluno[0]["ra"] == "RA777"
     assert len(cliente.chamadas_listar_matriculas) == 1
     assert cliente.chamadas_listar_matriculas[0]["id_aluno"] == 77  # extraído do envelope
+
+
+def test_professor_por_turma_tem_prioridade_sobre_mapa_global():
+    """Mapa por turma resolve inversoes de frente entre 1o e 2o ano."""
+    r, _ = _resolvedor(
+        mapa_prof={
+            "matematica a": 71,
+            "2b matematica a": 66,
+        },
+        professor_obrigatorio=True,
+    )
+    resultado = r.resolver_ids(
+        _lancamento(turma="2B", frente_professor="Matemática A")
+    )
+
+    assert resultado.id_professor == 66
+    assert resultado.rastreabilidade["fonte_resolucao"]["id_professor"] == \
+        "de_para_local:mapa_professores_por_turma"
+
+
+def test_carregar_mapa_professores_do_arquivo_com_mapa_por_turma(tmp_path):
+    import json
+
+    arq = tmp_path / "prof.json"
+    arq.write_text(json.dumps({
+        "_schema": "mapa_professores_v1",
+        "professores": {"mat a": 71},
+        "professores_por_turma": {
+            "2B": {"mat a": 66}
+        }
+    }), encoding="utf-8")
+
+    mapa = carregar_mapa_professores(arq)
+    assert mapa["mat a"] == 71
+    assert mapa["2b mat a"] == 66

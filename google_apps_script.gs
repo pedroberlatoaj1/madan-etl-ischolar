@@ -38,6 +38,12 @@
 // ---------------------------------------------------------------------------
 const API_BASE_URL = "https://sua-api.com";
 const WEBHOOK_SECRET = "troque_por_um_segredo_forte_em_producao";
+const ISCHOLAR_API_BASE_URL = "https://api.ischolar.app";
+const ISCHOLAR_CODIGO_ESCOLA = "madan";
+const PROP_ISCHOLAR_TOKEN = "ISCHOLAR_TOKEN";
+const ISCHOLAR_TAMANHO_LOTE_POST = 25;
+const ISCHOLAR_TEMPO_MAX_MS = 4 * 60 * 1000;
+const ISCHOLAR_MAX_PAGINAS_ALUNOS = 20;
 
 // Padrão reconhecido como aba trimestral Plano B: ex. "2A_T1", "1B_T3"
 var REGEX_ABA_PLANO_B = /^([1-9][A-Za-z])_(T[123])$/i;
@@ -59,6 +65,9 @@ function onOpen() {
     .addItem("Validar Lote", "menuValidarLote")
     .addItem("Aprovar e Enviar", "menuAprovarEEnviar")
     .addItem("Simular (Dry Run)", "menuSimularDryRun")
+    .addSeparator()
+    .addItem("Simular via Apps Script", "menuSimularViaAppsScript")
+    .addItem("Aprovar e Enviar (Apps Script)", "menuAprovarEEnviarViaAppsScript")
     .addSeparator()
     .addItem("Mostrar Ultimo Status", "menuMostrarUltimoStatus")
     .addItem("Limpar Estado Local", "menuLimparEstadoLocal")
@@ -109,6 +118,14 @@ function menuSimularDryRun() {
   executarFluxoAprovacao_(true);
 }
 
+function menuSimularViaAppsScript() {
+  executarFluxoAppsScript_(true);
+}
+
+function menuAprovarEEnviarViaAppsScript() {
+  executarFluxoAppsScript_(false);
+}
+
 function menuMostrarUltimoStatus() {
   executarAcaoComTratamento_(function() {
     var estado = carregarEstadoLocal_();
@@ -144,7 +161,7 @@ function menuMostrarUltimoStatus() {
 }
 
 function menuLimparEstadoLocal() {
-  PropertiesService.getDocumentProperties().deleteAllProperties();
+  obterArmazenamentoEstado_().deleteAllProperties();
   SpreadsheetApp.getUi().alert("Estado local limpo.", SpreadsheetApp.getUi().ButtonSet.OK);
 }
 
@@ -219,6 +236,83 @@ function executarFluxoAprovacao_(dryRun) {
     mostrarDialogoTexto_(
       dryRun ? "Resultado da Simulacao" : "Resultado do Envio",
       montarTextoResultadoEnvio_(resultado)
+    );
+  });
+}
+
+function executarFluxoAppsScript_(dryRun) {
+  executarAcaoComTratamento_(function() {
+    garantirBackendDisponivel_(dryRun ? "simular via Apps Script" : "aprovar e enviar via Apps Script");
+    garantirTokenIScholar_();
+
+    var estado = carregarEstadoLocal_();
+    if (!estado.lote_id) {
+      throw new Error("Nenhum lote validado localmente. Rode 'Validar Lote' antes de aprovar.");
+    }
+
+    var validacao = consultarValidacaoAtual_(estado.lote_id, false);
+    if (!validacao) {
+      throw new Error("Nao foi possivel localizar a validacao atual do lote.");
+    }
+    var statusValidacao = String(validacao.status || "");
+    var podeRecuperarEnvioAnterior = (
+      validacao.apto_para_aprovacao &&
+      ["send_failed", "dry_run_completed", "aguardando_execucao_externa"].indexOf(statusValidacao) >= 0
+    );
+    if (!validacao.pode_aprovar && !podeRecuperarEnvioAnterior) {
+      throw new Error(validacao.mensagem || "O lote nao esta apto para aprovacao.");
+    }
+
+    var aprovador = solicitarIdentidadeAprovador_(dryRun);
+    if (!aprovador) {
+      return;
+    }
+
+    confirmarAcao_(
+      dryRun ? "Simular via Apps Script?" : "Aprovar e enviar via Apps Script?",
+      [
+        "Lote: " + validacao.lote_id,
+        "Snapshot: " + validacao.snapshot_hash,
+        "Aprovador: " + aprovador.aprovado_por,
+        "Modo: " + (dryRun ? "simulacao via Apps Script" : "envio real via Apps Script"),
+        "",
+        "A VPS continuara validando e auditando. Apenas a chamada final ao iScholar sairá pelo Apps Script."
+      ].join("\n")
+    );
+
+    var aprovacao = chamarApi_(
+      "post",
+      "/lote/" + encodeURIComponent(validacao.lote_id) + "/aprovar",
+      {
+        snapshot_hash: validacao.snapshot_hash,
+        aprovador: aprovador.aprovado_por,
+        aprovador_nome_informado: aprovador.aprovador_nome_informado,
+        aprovador_email: aprovador.aprovador_email,
+        aprovador_origem: aprovador.aprovador_origem,
+        dry_run: dryRun,
+        modo_execucao: "apps_script"
+      }
+    );
+    if (aprovacao.statusCode !== 202) {
+      throw new Error(extrairMensagemErro_(aprovacao));
+    }
+
+    var pacote = obterPacoteExecucao_(validacao.lote_id, dryRun);
+    var mapaMatriculas = resolverMatriculasPorTurma_(pacote.turma.id_turma);
+    var resultados = executarLancamentosIScholar_(pacote, mapaMatriculas, dryRun);
+    var registro = reportarResultadoExecucao_(pacote, resultados, aprovador, dryRun);
+    var resultadoFinal = consultarResultadoEnvioAtual_(pacote.lote_id, false) || (registro.send_result || registro);
+
+    salvarEstadoLocal_({
+      lote_id: pacote.lote_id,
+      snapshot_hash: pacote.snapshot_hash,
+      aprovacao_job_id: "",
+      ultimo_status: resultadoFinal.status || ""
+    });
+
+    mostrarDialogoTexto_(
+      dryRun ? "Resultado da Simulacao via Apps Script" : "Resultado do Envio via Apps Script",
+      montarTextoResultadoEnvio_(resultadoFinal)
     );
   });
 }
@@ -376,6 +470,325 @@ function chamarApi_(method, path, body) {
     text: texto,
     json: json
   };
+}
+
+function obterPacoteExecucao_(loteId, dryRun) {
+  var path = "/lote/" + encodeURIComponent(loteId) + "/pacote-execucao?dry_run=" + (dryRun ? "true" : "false");
+  var resposta = chamarApi_("get", path);
+  if (resposta.statusCode !== 200) {
+    throw new Error(extrairMensagemErro_(resposta));
+  }
+  var pacote = resposta.json || {};
+  if (!pacote.turma || !pacote.turma.id_turma) {
+    throw new Error("Pacote de execucao sem id_turma. Preencha mapa_turmas.json na VPS.");
+  }
+  return pacote;
+}
+
+function chamarIScholar_(method, path, body, queryParams) {
+  var token = garantirTokenIScholar_();
+  var url = ISCHOLAR_API_BASE_URL.replace(/\/$/, "") + path;
+  var query = montarQueryString_(queryParams || {});
+  if (query) {
+    url += "?" + query;
+  }
+
+  var opcoes = {
+    method: method,
+    contentType: "application/json",
+    headers: {
+      "X-Codigo-Escola": ISCHOLAR_CODIGO_ESCOLA,
+      "X-Autorizacao": token,
+      "Accept": "application/json"
+    },
+    muteHttpExceptions: true
+  };
+  if (body !== undefined && body !== null) {
+    opcoes.payload = JSON.stringify(body);
+  }
+
+  var resposta = UrlFetchApp.fetch(url, opcoes);
+  var texto = resposta.getContentText() || "";
+  var json = null;
+  try {
+    json = texto ? JSON.parse(texto) : null;
+  } catch (err) {
+    json = null;
+  }
+  return {
+    statusCode: resposta.getResponseCode(),
+    text: texto,
+    json: json
+  };
+}
+
+function garantirTokenIScholar_() {
+  var token = PropertiesService.getScriptProperties().getProperty(PROP_ISCHOLAR_TOKEN);
+  token = (token || "").toString().trim();
+  if (!token) {
+    throw new Error("ISCHOLAR_TOKEN ausente em Script Properties. Configure antes de usar o modo Apps Script.");
+  }
+  return token;
+}
+
+function montarQueryString_(params) {
+  var partes = [];
+  Object.keys(params || {}).forEach(function(chave) {
+    var valor = params[chave];
+    if (valor === undefined || valor === null || valor === "") {
+      return;
+    }
+    partes.push(encodeURIComponent(chave) + "=" + encodeURIComponent(String(valor)));
+  });
+  return partes.join("&");
+}
+
+function resolverMatriculasPorTurma_(idTurma) {
+  var mapa = {};
+  for (var pagina = 1; pagina <= ISCHOLAR_MAX_PAGINAS_ALUNOS; pagina++) {
+    var resposta = chamarIScholar_("get", "/matricula/listar", null, {
+      id_turma: idTurma,
+      pagina: pagina
+    });
+    if (resposta.statusCode < 200 || resposta.statusCode >= 300) {
+      throw new Error("Falha ao listar alunos da turma no iScholar: HTTP " + resposta.statusCode + ".");
+    }
+
+    var alunos = extrairListaAlunos_(resposta.json || {});
+    if (!alunos.length) {
+      break;
+    }
+    alunos.forEach(function(aluno) {
+      var ra = extrairRaAluno_(aluno);
+      var idMatricula = extrairIdMatricula_(aluno);
+      if (ra && idMatricula) {
+        mapa[String(ra).trim()] = idMatricula;
+      }
+    });
+
+    var body = resposta.json || {};
+    if (body.tem_mais === false || body.tem_mais === undefined) {
+      break;
+    }
+  }
+  return mapa;
+}
+
+function extrairListaAlunos_(body) {
+  if (Array.isArray(body)) return body;
+  if (Array.isArray(body.dados)) return body.dados;
+  if (body.dados && Array.isArray(body.dados.alunos)) return body.dados.alunos;
+  if (body.dados && Array.isArray(body.dados.matriculas)) return body.dados.matriculas;
+  if (Array.isArray(body.alunos)) return body.alunos;
+  if (Array.isArray(body.matriculas)) return body.matriculas;
+  return [];
+}
+
+function extrairRaAluno_(aluno) {
+  var candidatos = [
+    aluno.ra,
+    aluno.numero_re,
+    aluno.re,
+    aluno.codigo_aluno,
+    aluno.aluno && aluno.aluno.ra,
+    aluno.aluno && aluno.aluno.numero_re
+  ];
+  for (var i = 0; i < candidatos.length; i++) {
+    if (candidatos[i] !== undefined && candidatos[i] !== null && String(candidatos[i]).trim()) {
+      return String(candidatos[i]).trim();
+    }
+  }
+  return null;
+}
+
+function extrairIdMatricula_(aluno) {
+  var candidatos = [
+    aluno.id_matricula,
+    aluno.id_matricula_aluno,
+    aluno.matricula_id,
+    aluno.matricula && aluno.matricula.id_matricula,
+    aluno.matricula && aluno.matricula.id_matricula_aluno,
+    aluno.matricula && aluno.matricula.matricula_id
+  ];
+  for (var i = 0; i < candidatos.length; i++) {
+    if (candidatos[i] !== undefined && candidatos[i] !== null && String(candidatos[i]).trim()) {
+      return Number(candidatos[i]);
+    }
+  }
+  return null;
+}
+
+function executarLancamentosIScholar_(pacote, mapaMatriculas, dryRun) {
+  var inicio = Date.now();
+  var resultados = [];
+  var pendentes = [];
+  var lancamentos = pacote.lancamentos || [];
+  (pacote.itens_com_erro_local || []).forEach(function(item) {
+    resultados.push(resultadoErroResolucao_(item, (item.erros || []).join("; ") || "Item com erro local no pacote de execucao."));
+  });
+
+  lancamentos.forEach(function(item) {
+    var idMatricula = mapaMatriculas[String(item.ra || "").trim()];
+    if (!idMatricula) {
+      resultados.push(resultadoErroResolucao_(item, "RA nao encontrado via pega_alunos."));
+      return;
+    }
+    if (dryRun) {
+      resultados.push(resultadoDryRun_(item, idMatricula));
+      return;
+    }
+    pendentes.push({ item: item, id_matricula: idMatricula });
+  });
+
+  for (var i = 0; i < pendentes.length; i += ISCHOLAR_TAMANHO_LOTE_POST) {
+    if ((Date.now() - inicio) > ISCHOLAR_TEMPO_MAX_MS) {
+      for (var restante = i; restante < pendentes.length; restante++) {
+        resultados.push(resultadoErroEnvio_(pendentes[restante].item, pendentes[restante].id_matricula, 0, "Tempo limite do Apps Script atingido.", true, null));
+      }
+      break;
+    }
+
+    var lote = pendentes.slice(i, i + ISCHOLAR_TAMANHO_LOTE_POST);
+    var requests = lote.map(function(entry) {
+      return montarRequestLancamento_(entry.item, entry.id_matricula);
+    });
+
+    var responses;
+    try {
+      responses = UrlFetchApp.fetchAll(requests);
+    } catch (err) {
+      lote.forEach(function(entry) {
+        resultados.push(resultadoErroEnvio_(entry.item, entry.id_matricula, 0, "Falha em fetchAll: " + err.message, true, null));
+      });
+      continue;
+    }
+
+    for (var r = 0; r < responses.length; r++) {
+      var resposta = responses[r];
+      var entry = lote[r];
+      var statusCode = resposta.getResponseCode();
+      var texto = resposta.getContentText() || "";
+      var sucesso = statusCode >= 200 && statusCode < 300;
+      if (sucesso) {
+        resultados.push(resultadoEnviado_(entry.item, entry.id_matricula, statusCode, texto));
+      } else {
+        resultados.push(resultadoErroEnvio_(entry.item, entry.id_matricula, statusCode, texto, statusCode === 429 || statusCode >= 500, texto));
+      }
+    }
+  }
+  return resultados;
+}
+
+function montarRequestLancamento_(item, idMatricula) {
+  var token = garantirTokenIScholar_();
+  var payload = montarPayloadLancamentoIScholar_(item, idMatricula);
+  return {
+    url: ISCHOLAR_API_BASE_URL.replace(/\/$/, "") + "/notas/lanca_nota",
+    method: "post",
+    contentType: "application/json",
+    headers: {
+      "X-Codigo-Escola": ISCHOLAR_CODIGO_ESCOLA,
+      "X-Autorizacao": token,
+      "Accept": "application/json"
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+}
+
+function montarPayloadLancamentoIScholar_(item, idMatricula) {
+  return {
+    id_matricula: idMatricula,
+    id_disciplina: item.id_disciplina,
+    id_avaliacao: item.id_avaliacao,
+    id_professor: item.id_professor,
+    valor: item.valor
+  };
+}
+
+function reportarResultadoExecucao_(pacote, resultados, aprovador, dryRun) {
+  var resposta = chamarApi_(
+    "post",
+    "/lote/" + encodeURIComponent(pacote.lote_id) + "/resultado-execucao",
+    {
+      snapshot_hash: pacote.snapshot_hash,
+      dry_run: dryRun,
+      aprovador: aprovador.aprovado_por,
+      aprovador_nome_informado: aprovador.aprovador_nome_informado,
+      aprovador_email: aprovador.aprovador_email,
+      aprovador_origem: aprovador.aprovador_origem,
+      resultados: resultados
+    }
+  );
+  if (resposta.statusCode !== 200) {
+    throw new Error(extrairMensagemErro_(resposta));
+  }
+  return resposta.json || {};
+}
+
+function resultadoBase_(item, idMatricula) {
+  return {
+    item_key: item.item_key,
+    estudante: item.estudante,
+    ra: item.ra,
+    componente: item.componente,
+    disciplina: item.disciplina,
+    trimestre: item.trimestre,
+    valor: item.valor,
+    id_matricula: idMatricula || null,
+    id_disciplina: item.id_disciplina,
+    id_avaliacao: item.id_avaliacao,
+    id_professor: item.id_professor,
+    rastreabilidade: item.rastreabilidade || {}
+  };
+}
+
+function resultadoDryRun_(item, idMatricula) {
+  var res = resultadoBase_(item, idMatricula);
+  res.status = "dry_run";
+  res.mensagem = "Dry run: payload montado no Apps Script, sem POST no iScholar.";
+  res.payload_enviado = montarPayloadLancamentoIScholar_(item, idMatricula);
+  return res;
+}
+
+function resultadoEnviado_(item, idMatricula, statusCode, texto) {
+  var res = resultadoBase_(item, idMatricula);
+  res.status = "enviado";
+  res.status_code = statusCode;
+  res.mensagem = "Nota enviada ao iScholar.";
+  res.resposta_api = texto;
+  res.payload_enviado = montarPayloadLancamentoIScholar_(item, idMatricula);
+  return res;
+}
+
+function resultadoErroResolucao_(item, mensagem) {
+  var res = resultadoBase_(item, null);
+  res.status = "erro_resolucao";
+  res.mensagem = mensagem;
+  res.erros_resolucao = [mensagem];
+  return res;
+}
+
+function resultadoErroEnvio_(item, idMatricula, statusCode, mensagem, transitorio, respostaApi) {
+  var res = resultadoBase_(item, idMatricula);
+  res.status = "erro_envio";
+  res.status_code = statusCode;
+  res.mensagem = mensagem;
+  res.transitorio = !!transitorio;
+  res.resposta_api = respostaApi;
+  res.payload_enviado = montarPayloadLancamentoIScholar_(item, idMatricula);
+  return res;
+}
+
+function utilListarTurmas_() {
+  executarAcaoComTratamento_(function() {
+    var resposta = chamarIScholar_("get", "/turma/lista", null, null);
+    mostrarDialogoTexto_("Turmas iScholar", "HTTP " + resposta.statusCode + "\n\n" + JSON.stringify(resposta.json || resposta.text, null, 2));
+  });
+}
+
+function utilListarTurmas() {
+  utilListarTurmas_();
 }
 
 function garantirBackendDisponivel_(acao) {
@@ -681,7 +1094,7 @@ function valorOuZero_(valor) {
 }
 
 function carregarEstadoLocal_() {
-  var props = PropertiesService.getDocumentProperties();
+  var props = obterArmazenamentoEstado_();
   return {
     lote_id: props.getProperty(PROP_LOTE_ID),
     snapshot_hash: props.getProperty(PROP_SNAPSHOT_HASH),
@@ -693,11 +1106,16 @@ function carregarEstadoLocal_() {
 }
 
 function salvarEstadoLocal_(estado) {
-  var props = PropertiesService.getDocumentProperties();
+  var props = obterArmazenamentoEstado_();
   if (estado.lote_id !== undefined) props.setProperty(PROP_LOTE_ID, String(estado.lote_id || ""));
   if (estado.snapshot_hash !== undefined) props.setProperty(PROP_SNAPSHOT_HASH, String(estado.snapshot_hash || ""));
   if (estado.validacao_job_id !== undefined) props.setProperty(PROP_VALIDACAO_JOB_ID, String(estado.validacao_job_id || ""));
   if (estado.aprovacao_job_id !== undefined) props.setProperty(PROP_APROVACAO_JOB_ID, String(estado.aprovacao_job_id || ""));
   if (estado.ultimo_status !== undefined) props.setProperty(PROP_ULTIMO_STATUS, String(estado.ultimo_status || ""));
   if (estado.ultima_aba !== undefined) props.setProperty(PROP_ULTIMA_ABA, String(estado.ultima_aba || ""));
+}
+
+function obterArmazenamentoEstado_() {
+  // UserProperties evita falhas de DocumentProperties em arquivos recém-convertidos do XLSX.
+  return PropertiesService.getUserProperties();
 }

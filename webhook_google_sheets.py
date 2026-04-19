@@ -43,6 +43,7 @@ from logger import configurar_logger
 from pipeline_runner import (
     LoteJaAprovadoError,
     LoteNaoElegivelError,
+    MapaInvalidoError,
     SnapshotStaleError,
     STATUS_APPROVAL_JOB_QUEUED,
     STATUS_DRY_RUN_COMPLETED,
@@ -54,10 +55,15 @@ from pipeline_runner import (
     STATUS_VALIDATION_JOB_QUEUED,
     STATUS_VALIDATION_PENDING_APPROVAL,
     consultar_resultado_envio_atual,
+    aprovar_lote_para_execucao_externa,
+    preparar_pacote_execucao,
+    registrar_resultado_execucao_externa,
     registrar_solicitacao_aprovacao_envio,
     registrar_validacao_em_fila,
     validar_solicitacao_aprovacao,
 )
+from envio_lote_audit_store import EnvioLoteAuditStore
+from lote_itens_store import LoteItensStore
 from resultado_envio_lote_store import ResultadoEnvioLoteStore
 from snapshot_store import save_snapshot
 from utils.hash_utils import sha256_bytes, sha256_dataframe_normalizado
@@ -146,6 +152,7 @@ def _job_payload_defaults() -> dict[str, Any]:
         "mapa_disciplinas": current_app.config["MAPA_DISCIPLINAS"],
         "mapa_avaliacoes": current_app.config["MAPA_AVALIACOES"],
         "mapa_professores": current_app.config["MAPA_PROFESSORES"],
+        "mapa_turmas": current_app.config["MAPA_TURMAS"],
     }
 
 
@@ -443,6 +450,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
         MAPA_DISCIPLINAS=os.getenv("MAPA_DISCIPLINAS", "mapa_disciplinas.json"),
         MAPA_AVALIACOES=os.getenv("MAPA_AVALIACOES", "mapa_avaliacoes.json"),
         MAPA_PROFESSORES=os.getenv("MAPA_PROFESSORES", "mapa_professores.json"),
+        MAPA_TURMAS=os.getenv("MAPA_TURMAS", "mapa_turmas.json"),
         _NONCE_CACHE={},
         _RATE_LIMIT_CACHE={},
     )
@@ -617,15 +625,62 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
             approval_identity = _normalizar_aprovador_payload(payload)
             aprovado_por = str(approval_identity.get("aprovado_por") or "").strip()
             dry_run = bool(payload.get("dry_run", False))
+            modo_execucao = str(payload.get("modo_execucao") or "worker").strip().lower()
             if not snapshot_hash:
                 raise ValueError("Campo 'snapshot_hash' e obrigatorio.")
             if not aprovado_por:
                 raise ValueError("Campo 'aprovador' e obrigatorio.")
+            if modo_execucao not in {"worker", "apps_script"}:
+                raise ValueError("Campo 'modo_execucao' deve ser 'worker' ou 'apps_script'.")
         except ValueError as exc:
             return _json_erro(str(exc), 400, codigo="payload_invalido", request_id=request_id)
 
         validation_store, approval_store, result_store = _stores()
         try:
+            if modo_execucao == "apps_script":
+                itens_store = LoteItensStore(current_app.config["LOTE_ITENS_DB"])
+                registro = aprovar_lote_para_execucao_externa(
+                    lote_id=lote_id,
+                    aprovado_por=aprovado_por,
+                    approval_identity=approval_identity,
+                    validation_store=validation_store,
+                    approval_store=approval_store,
+                    itens_store=itens_store,
+                    result_store=result_store,
+                    expected_snapshot_hash=snapshot_hash,
+                    dry_run=dry_run,
+                )
+                log.info(
+                    "Lote aprovado para execucao Apps Script | request_id=%s | lote_id=%s | snapshot_hash=%s | aprovador=%s",
+                    request_id,
+                    lote_id,
+                    snapshot_hash,
+                    aprovado_por,
+                )
+                return (
+                    jsonify(
+                        {
+                            "status": "accepted",
+                            "job_id": None,
+                            "modo_execucao": "apps_script",
+                            "dry_run": dry_run,
+                            "lote_id": lote_id,
+                            "snapshot_hash": snapshot_hash,
+                            "mensagem": (
+                                "Lote aprovado para simulacao via Apps Script."
+                                if dry_run
+                                else "Lote aprovado para envio via Apps Script."
+                            ),
+                            "pacote_execucao": {
+                                "endpoint": f"/lote/{lote_id}/pacote-execucao",
+                            },
+                            "request_id": request_id,
+                            "resultado_envio": registro.get("send_result"),
+                        }
+                    ),
+                    202,
+                )
+
             validar_solicitacao_aprovacao(
                 lote_id=lote_id,
                 aprovado_por=aprovado_por,
@@ -703,6 +758,89 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
         except Exception:
             log.exception("Erro interno ao criar job de aprovacao | request_id=%s | lote_id=%s", request_id, lote_id)
             return _json_erro("Erro interno ao processar solicitacao.", 500, codigo="erro_interno", request_id=request_id)
+
+    @app.get("/lote/<path:lote_id>/pacote-execucao")
+    @requer_autenticacao
+    def obter_pacote_execucao(lote_id: str):
+        request_id = _request_id()
+        dry_run = str(request.args.get("dry_run") or "").strip().lower() in {
+            "1",
+            "true",
+            "sim",
+            "yes",
+        }
+        validation_store, approval_store, _ = _stores()
+        itens_store = LoteItensStore(current_app.config["LOTE_ITENS_DB"])
+        try:
+            pacote = preparar_pacote_execucao(
+                lote_id=lote_id,
+                validation_store=validation_store,
+                approval_store=approval_store,
+                itens_store=itens_store,
+                mapa_disciplinas=current_app.config["MAPA_DISCIPLINAS"],
+                mapa_avaliacoes=current_app.config["MAPA_AVALIACOES"],
+                mapa_professores=current_app.config["MAPA_PROFESSORES"],
+                mapa_turmas=current_app.config["MAPA_TURMAS"],
+                professor_obrigatorio=True,
+                dry_run=dry_run,
+            )
+            pacote["request_id"] = request_id
+            return jsonify(pacote), 200
+        except MapaInvalidoError as exc:
+            return _json_erro(str(exc), 500, codigo="mapa_invalido", request_id=request_id)
+        except KeyError as exc:
+            return _json_erro(str(exc), 404, codigo="nao_encontrado", request_id=request_id)
+        except ValueError as exc:
+            return _json_erro(str(exc), 409, codigo="conflito_de_estado", request_id=request_id)
+        except Exception:
+            log.exception("Erro interno ao montar pacote de execucao | request_id=%s | lote_id=%s", request_id, lote_id)
+            return _json_erro("Erro interno ao montar pacote de execucao.", 500, codigo="erro_interno", request_id=request_id)
+
+    @app.post("/lote/<path:lote_id>/resultado-execucao")
+    @requer_autenticacao
+    def receber_resultado_execucao(lote_id: str):
+        request_id = _request_id()
+        try:
+            payload = _payload_json()
+            snapshot_hash = str(payload.get("snapshot_hash") or "").strip()
+            resultados = payload.get("resultados")
+            dry_run = bool(payload.get("dry_run", False))
+            approval_identity = _normalizar_aprovador_payload(payload)
+            aprovado_por = str(approval_identity.get("aprovado_por") or "").strip() or None
+            if not snapshot_hash:
+                raise ValueError("Campo 'snapshot_hash' e obrigatorio.")
+            if not isinstance(resultados, list):
+                raise ValueError("Campo 'resultados' deve ser uma lista.")
+        except ValueError as exc:
+            return _json_erro(str(exc), 400, codigo="payload_invalido", request_id=request_id)
+
+        validation_store, _, result_store = _stores()
+        itens_store = LoteItensStore(current_app.config["LOTE_ITENS_DB"])
+        audit_store = EnvioLoteAuditStore(current_app.config["ENVIO_LOTE_AUDIT_DB"])
+        try:
+            registro = registrar_resultado_execucao_externa(
+                lote_id=lote_id,
+                snapshot_hash=snapshot_hash,
+                resultados=resultados,
+                validation_store=validation_store,
+                itens_store=itens_store,
+                result_store=result_store,
+                audit_store=audit_store,
+                aprovado_por=aprovado_por,
+                approval_identity=approval_identity,
+                dry_run=dry_run,
+            )
+            registro["request_id"] = request_id
+            return jsonify(registro), 200
+        except SnapshotStaleError as exc:
+            return _json_erro(str(exc), 409, codigo="snapshot_stale", request_id=request_id)
+        except KeyError as exc:
+            return _json_erro(str(exc), 404, codigo="nao_encontrado", request_id=request_id)
+        except ValueError as exc:
+            return _json_erro(str(exc), 400, codigo="payload_invalido", request_id=request_id)
+        except Exception:
+            log.exception("Erro interno ao registrar resultado externo | request_id=%s | lote_id=%s", request_id, lote_id)
+            return _json_erro("Erro interno ao registrar resultado externo.", 500, codigo="erro_interno", request_id=request_id)
 
     @app.get("/lote/<path:lote_id>/resultado-envio")
     @requer_autenticacao

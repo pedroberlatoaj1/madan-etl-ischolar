@@ -35,6 +35,7 @@ from aprovacao_lote import (
 )
 from aprovacao_lote_store import AprovacaoLoteStore
 from envio_lote import ResultadoEnvioLote, ResolvedorIDsAbstrato, enviar_lote
+from envio_lote import ResultadoItemEnvio, _compute_item_key
 from envio_lote_audit_store import EnvioLoteAuditStore
 from logger import configurar_logger
 from lote_itens_store import LoteItensStore
@@ -44,6 +45,7 @@ from madan_planilha_mapper import (
 )
 from resolvedor_ids_ischolar import (
     ResolvedorIDsHibrido,
+    ResolvedorIDsLocal,
     carregar_mapa_avaliacoes,
     carregar_mapa_disciplinas,
     carregar_mapa_professores,
@@ -81,10 +83,13 @@ STATUS_SEND_RETRY_SCHEDULED = "send_retry_scheduled"
 STATUS_DRY_RUN_COMPLETED = "dry_run_completed"
 STATUS_SENT = "sent"
 STATUS_SEND_FAILED = "send_failed"
+STATUS_AGUARDANDO_EXECUCAO_EXTERNA = "aguardando_execucao_externa"
+STATUS_EXECUCAO_EXTERNA_CONCLUIDA = "execucao_externa_concluida"
 
 DEFAULT_MAPA_DISC = "mapa_disciplinas.json"
 DEFAULT_MAPA_AVAL = "mapa_avaliacoes.json"
 DEFAULT_MAPA_PROF = "mapa_professores.json"
+DEFAULT_MAPA_TURMAS = "mapa_turmas.json"
 
 
 class TemplateInvalidoError(ValueError):
@@ -589,6 +594,85 @@ def _approval_state_matches_current_snapshot(estado: Any, resumo_atual: Mapping[
     return str(estado.hash_resumo_aprovado) == _hash_resumo(resumo_atual)
 
 
+def _carregar_mapa_turmas(caminho: str | os.PathLike[str]) -> dict[str, int]:
+    path = Path(caminho)
+    if not path.exists():
+        raise MapaInvalidoError(f"Mapa de turmas nao encontrado: {path}")
+
+    try:
+        dados = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise MapaInvalidoError(f"Mapa de turmas invalido: {exc}") from exc
+
+    turmas_raw = dados.get("turmas") if isinstance(dados, Mapping) else None
+    if not isinstance(turmas_raw, Mapping):
+        raise MapaInvalidoError("Mapa de turmas precisa conter objeto 'turmas'.")
+
+    turmas: dict[str, int] = {}
+    for chave, valor in turmas_raw.items():
+        codigo = str(chave or "").strip().upper()
+        if not codigo:
+            continue
+        try:
+            turmas[codigo] = int(valor)
+        except (TypeError, ValueError) as exc:
+            raise MapaInvalidoError(
+                f"id_turma invalido para turma '{codigo}': {valor!r}"
+            ) from exc
+    if not turmas:
+        raise MapaInvalidoError("Mapa de turmas nao possui nenhuma turma configurada.")
+    return turmas
+
+
+def _derivar_codigo_turma(lote_id: str, itens: list[Mapping[str, Any]]) -> str:
+    turmas = {
+        str(item.get("turma") or "").strip().upper()
+        for item in itens
+        if str(item.get("turma") or "").strip()
+    }
+    if len(turmas) == 1:
+        return next(iter(turmas))
+    if len(turmas) > 1:
+        raise ValueError(
+            f"Lote '{lote_id}' contem mais de uma turma nos itens: {sorted(turmas)}"
+        )
+
+    nome_aba = str(lote_id or "").rsplit("/", 1)[-1]
+    contexto = parsear_nome_aba(nome_aba)
+    if contexto is not None:
+        return contexto[0]
+    raise ValueError(
+        f"Nao foi possivel derivar a turma do lote '{lote_id}'. "
+        "Use aba no padrao 2B_T2 ou inclua campo turma nos itens."
+    )
+
+
+def _valor_lancamento(lancamento: Mapping[str, Any]) -> Optional[float]:
+    for chave in ("nota_ajustada_0a10", "valor", "valor_bruta", "nota"):
+        if chave not in lancamento:
+            continue
+        valor = lancamento.get(chave)
+        if valor is None or str(valor).strip() == "":
+            continue
+        try:
+            return float(str(valor).replace(",", "."))
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _ra_lancamento(lancamento: Mapping[str, Any]) -> Optional[str]:
+    for chave in ("ra", "numero_re", "id_aluno", "cpf"):
+        valor = lancamento.get(chave)
+        if valor is not None and str(valor).strip():
+            return str(valor).strip()
+    return None
+
+
+def _lancamento_por_item_key(lote_id: str, itens: list[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
+    return {_compute_item_key(lote_id, item): item for item in itens}
+
+
 def registrar_validacao_em_fila(
     *,
     lote_id: str,
@@ -833,6 +917,371 @@ def registrar_solicitacao_aprovacao_envio(
     validado["validation_result"] = _serializar_validacao(persistido)
     validado["send_result"] = resultado_envio
     return validado
+
+
+def aprovar_lote_para_execucao_externa(
+    *,
+    lote_id: str,
+    aprovado_por: str,
+    approval_identity: Optional[Mapping[str, Any]] = None,
+    validation_store: ValidacaoLoteStore,
+    approval_store: AprovacaoLoteStore,
+    itens_store: LoteItensStore,
+    result_store: ResultadoEnvioLoteStore,
+    expected_snapshot_hash: Optional[str] = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    identidade = _normalizar_identidade_aprovador(
+        aprovado_por=aprovado_por,
+        approval_identity=approval_identity,
+    )
+    if not str(identidade["aprovado_por"] or "").strip():
+        raise ValueError("aprovado_por e obrigatorio para aprovar o lote.")
+
+    persistido = validation_store.carregar(lote_id)
+    if persistido is None:
+        raise KeyError(f"Resultado de validacao do lote '{lote_id}' nao encontrado.")
+    if expected_snapshot_hash and persistido.snapshot_hash != expected_snapshot_hash:
+        raise SnapshotStaleError(
+            f"Snapshot stale para o lote '{lote_id}': "
+            f"esperado={expected_snapshot_hash} atual={persistido.snapshot_hash}"
+        )
+    if persistido.status not in {
+        STATUS_VALIDATION_PENDING_APPROVAL,
+        STATUS_AGUARDANDO_EXECUCAO_EXTERNA,
+        STATUS_DRY_RUN_COMPLETED,
+        STATUS_SEND_FAILED,
+    }:
+        raise ValueError(
+            f"Lote '{lote_id}' nao esta em estado permitido para execucao externa "
+            f"(status atual: {persistido.status})."
+        )
+    if not persistido.apto_para_aprovacao:
+        raise LoteNaoElegivelError("O lote contem erros e nao pode ser aprovado.")
+
+    validado = {
+        "lote_id": lote_id,
+        "snapshot_hash": persistido.snapshot_hash,
+        "aprovado_por": str(identidade["aprovado_por"]).strip(),
+        "approval_identity": identidade,
+        "status": persistido.status,
+        "validation_result": _serializar_validacao(persistido),
+        "resumo": dict(persistido.resumo or {}),
+    }
+
+    resumo = _resumo_from_dict(persistido.resumo)
+    estado = approval_store.carregar(lote_id)
+    if estado is None:
+        estado = criar_estado_lote(lote_id=lote_id, resumo=resumo, store=approval_store)
+
+    identidade = validado["approval_identity"]
+    if estado.status == "aguardando_aprovacao":
+        estado = aprovar_lote(
+            estado,
+            aprovado_por=validado["aprovado_por"],
+            aprovador_nome_informado=identidade.get("aprovador_nome_informado"),
+            aprovador_email=identidade.get("aprovador_email"),
+            aprovador_origem=identidade.get("aprovador_origem"),
+            aprovador_identity_strength=identidade.get("aprovador_identity_strength"),
+            store=approval_store,
+            itens_sendaveis=list(persistido.itens_sendaveis or []),
+            itens_store=itens_store,
+        )
+    elif estado.status == "aprovado_para_envio":
+        itens_store.salvar_itens(lote_id, list(persistido.itens_sendaveis or []))
+    else:
+        raise ValueError(
+            f"Lote '{lote_id}' nao esta aprovado para execucao externa "
+            f"(status atual da aprovacao: {estado.status})."
+        )
+
+    envio = {
+        "lote_id": lote_id,
+        "dry_run": bool(dry_run),
+        "total_sendaveis": int(len(persistido.itens_sendaveis or [])),
+        "total_enviados": 0,
+        "total_dry_run": 0,
+        "total_erros_resolucao": 0,
+        "total_erros_envio": 0,
+        "sucesso": False,
+        "mensagem": "Lote aprovado para execucao externa via Apps Script.",
+    }
+    persistido, resultado_envio = atualizar_status_lote_envio(
+        lote_id=lote_id,
+        status=STATUS_AGUARDANDO_EXECUCAO_EXTERNA,
+        validation_store=validation_store,
+        result_store=result_store,
+        job_id=None,
+        snapshot_hash=persistido.snapshot_hash,
+        aprovado_por=validado["aprovado_por"],
+        approval_identity=identidade,
+        sucesso=False,
+        mensagem=envio["mensagem"],
+        envio=envio,
+    )
+    if persistido is None:
+        raise KeyError(f"Resultado de validacao do lote '{lote_id}' nao encontrado.")
+
+    validado.update(
+        {
+            "status": persistido.status,
+            "modo_execucao": "apps_script",
+            "dry_run": bool(dry_run),
+            "aprovacao": _serializar_estado_aprovacao(estado),
+            "validation_result": _serializar_validacao(persistido),
+            "send_result": resultado_envio,
+        }
+    )
+    return validado
+
+
+def preparar_pacote_execucao(
+    *,
+    lote_id: str,
+    validation_store: ValidacaoLoteStore,
+    approval_store: AprovacaoLoteStore,
+    itens_store: LoteItensStore,
+    mapa_disciplinas: str = DEFAULT_MAPA_DISC,
+    mapa_avaliacoes: str = DEFAULT_MAPA_AVAL,
+    mapa_professores: Optional[str] = DEFAULT_MAPA_PROF,
+    mapa_turmas: str = DEFAULT_MAPA_TURMAS,
+    professor_obrigatorio: bool = True,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    persistido = validation_store.carregar(lote_id)
+    if persistido is None:
+        raise KeyError(f"Resultado de validacao do lote '{lote_id}' nao encontrado.")
+
+    estado = approval_store.carregar(lote_id)
+    if estado is None or estado.status != "aprovado_para_envio":
+        raise ValueError(
+            f"Lote '{lote_id}' nao esta aprovado para execucao externa "
+            f"(status atual: {getattr(estado, 'status', None)!r})."
+        )
+
+    itens = itens_store.carregar_itens(lote_id)
+    if itens is None:
+        raise ValueError(f"Lote '{lote_id}' aprovado sem itens sendaveis persistidos.")
+    itens = list(itens)
+
+    caminho_prof = mapa_professores
+    if caminho_prof and not Path(caminho_prof).exists():
+        caminho_prof = None
+    mapa_disc = carregar_mapa_disciplinas(mapa_disciplinas)
+    mapa_aval = carregar_mapa_avaliacoes(mapa_avaliacoes)
+    mapa_prof = carregar_mapa_professores(caminho_prof) if caminho_prof else None
+    resolvedor = ResolvedorIDsLocal(
+        cliente=None,
+        mapa_disciplinas=mapa_disc,
+        mapa_avaliacoes=mapa_aval,
+        mapa_professores=mapa_prof,
+        professor_obrigatorio=professor_obrigatorio,
+    )
+
+    lancamentos: list[dict[str, Any]] = []
+    itens_com_erro_local: list[dict[str, Any]] = []
+    for item in itens:
+        item_key = _compute_item_key(lote_id, item)
+        resolucao = resolvedor.resolver_ids(item)
+        erros_locais = list(resolucao.erros or [])
+        if resolucao.id_disciplina is None:
+            erros_locais.append("[disciplina_sem_id] id_disciplina nao resolvido localmente.")
+        if resolucao.id_avaliacao is None:
+            erros_locais.append("[avaliacao_sem_id] id_avaliacao nao resolvido localmente.")
+        if professor_obrigatorio and resolucao.id_professor is None:
+            erros_locais.append("[professor_sem_id] id_professor nao resolvido localmente.")
+
+        if erros_locais:
+            itens_com_erro_local.append(
+                {
+                    "item_key": item_key,
+                    "estudante": item.get("estudante"),
+                    "ra": _ra_lancamento(item),
+                    "disciplina": item.get("disciplina"),
+                    "componente": item.get("componente"),
+                    "trimestre": item.get("trimestre"),
+                    "linha_origem": item.get("linha_origem"),
+                    "erros": erros_locais,
+                    "rastreabilidade": resolucao.rastreabilidade,
+                }
+            )
+            continue
+
+        lancamentos.append(
+            {
+                "item_key": item_key,
+                "estudante": item.get("estudante"),
+                "ra": _ra_lancamento(item),
+                "disciplina": item.get("disciplina"),
+                "componente": item.get("componente"),
+                "trimestre": item.get("trimestre"),
+                "valor": _valor_lancamento(item),
+                "id_disciplina": resolucao.id_disciplina,
+                "id_avaliacao": resolucao.id_avaliacao,
+                "id_professor": resolucao.id_professor,
+                "linha_origem": item.get("linha_origem"),
+                "rastreabilidade": resolucao.rastreabilidade,
+            }
+        )
+
+    codigo_turma = _derivar_codigo_turma(lote_id, itens)
+    turmas = _carregar_mapa_turmas(mapa_turmas)
+    id_turma = int(turmas.get(codigo_turma, 0) or 0)
+    if id_turma <= 0:
+        raise MapaInvalidoError(
+            f"Turma '{codigo_turma}' sem id_turma configurado em {mapa_turmas}."
+        )
+
+    return {
+        "lote_id": lote_id,
+        "snapshot_hash": persistido.snapshot_hash,
+        "dry_run": bool(dry_run),
+        "turma": {"nome": codigo_turma, "id_turma": id_turma, "erro": None},
+        "lancamentos": lancamentos,
+        "total_lancamentos": len(lancamentos),
+        "total_itens_originais": len(itens),
+        "itens_com_erro_local": itens_com_erro_local,
+    }
+
+
+def registrar_resultado_execucao_externa(
+    *,
+    lote_id: str,
+    snapshot_hash: str,
+    resultados: list[Mapping[str, Any]],
+    validation_store: ValidacaoLoteStore,
+    itens_store: LoteItensStore,
+    result_store: ResultadoEnvioLoteStore,
+    audit_store: EnvioLoteAuditStore,
+    aprovado_por: Optional[str] = None,
+    approval_identity: Optional[Mapping[str, Any]] = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    persistido = validation_store.carregar(lote_id)
+    if persistido is None:
+        raise KeyError(f"Resultado de validacao do lote '{lote_id}' nao encontrado.")
+    if persistido.snapshot_hash != snapshot_hash:
+        raise SnapshotStaleError(
+            f"Snapshot stale para o lote '{lote_id}': "
+            f"esperado={snapshot_hash} atual={persistido.snapshot_hash}"
+        )
+    if not isinstance(resultados, list):
+        raise ValueError("Campo 'resultados' deve ser uma lista.")
+
+    itens = itens_store.carregar_itens(lote_id) or []
+    itens_por_key = _lancamento_por_item_key(lote_id, list(itens))
+
+    total_enviados = 0
+    total_dry_run = 0
+    total_erros_resolucao = 0
+    total_erros_envio = 0
+    itens_resultado: list[ResultadoItemEnvio] = []
+    status_validos = {"enviado", "dry_run", "erro_resolucao", "erro_envio"}
+
+    for bruto in resultados:
+        item_key = str(bruto.get("item_key") or "").strip()
+        if not item_key:
+            item_key = sha256_bytes(
+                json.dumps(dict(bruto), sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+            )
+        origem = itens_por_key.get(item_key, {})
+        status = str(bruto.get("status") or "").strip().lower()
+        if status not in status_validos:
+            status = "erro_envio"
+
+        if status == "enviado":
+            total_enviados += 1
+        elif status == "dry_run":
+            total_dry_run += 1
+        elif status == "erro_resolucao":
+            total_erros_resolucao += 1
+        else:
+            total_erros_envio += 1
+
+        mensagem = str(bruto.get("mensagem") or "").strip()
+        if not mensagem:
+            mensagem = (
+                "Resultado recebido do Apps Script."
+                if status in {"enviado", "dry_run"}
+                else "Falha reportada pelo Apps Script."
+            )
+        item = ResultadoItemEnvio(
+            lote_id=lote_id,
+            item_key=item_key,
+            estudante=bruto.get("estudante") or origem.get("estudante"),
+            componente=bruto.get("componente") or origem.get("componente"),
+            disciplina=bruto.get("disciplina") or origem.get("disciplina"),
+            trimestre=bruto.get("trimestre") or origem.get("trimestre"),
+            valor_bruta=_valor_lancamento(bruto) if bruto.get("valor") is not None else _valor_lancamento(origem),
+            id_matricula=bruto.get("id_matricula"),
+            id_disciplina=bruto.get("id_disciplina") or bruto.get("id_disciplina_resolvido"),
+            id_avaliacao=bruto.get("id_avaliacao") or bruto.get("id_avaliacao_resolvido"),
+            id_professor=bruto.get("id_professor") or bruto.get("id_professor_resolvido"),
+            dry_run=bool(dry_run or status == "dry_run"),
+            status=status,
+            mensagem=mensagem,
+            transitorio=bool(bruto.get("transitorio", False)),
+            payload_enviado=bruto.get("payload_enviado"),
+            resposta_api=bruto.get("resposta_api"),
+            erros_resolucao=list(bruto.get("erros_resolucao") or []),
+            rastreabilidade=dict(bruto.get("rastreabilidade") or {}),
+        )
+        audit_store.salvar_item(item)
+        itens_resultado.append(item)
+
+    total_sendaveis = len(resultados)
+    sucesso = total_sendaveis > 0 and total_erros_resolucao == 0 and total_erros_envio == 0
+    if total_erros_resolucao or total_erros_envio:
+        status_final = STATUS_SEND_FAILED
+        mensagem_final = (
+            f"execucao externa: {total_enviados + total_dry_run}/{total_sendaveis} "
+            f"processados; {total_erros_resolucao + total_erros_envio} erro(s)."
+        )
+    elif dry_run or total_dry_run == total_sendaveis:
+        status_final = STATUS_DRY_RUN_COMPLETED
+        mensagem_final = f"dry_run externo concluido: {total_dry_run}/{total_sendaveis} item(ns)."
+    else:
+        status_final = STATUS_SENT
+        mensagem_final = f"envio externo concluido: {total_enviados}/{total_sendaveis} item(ns)."
+
+    envio = {
+        "lote_id": lote_id,
+        "dry_run": bool(dry_run),
+        "total_sendaveis": total_sendaveis,
+        "total_enviados": total_enviados,
+        "total_dry_run": total_dry_run,
+        "total_erros_resolucao": total_erros_resolucao,
+        "total_erros_envio": total_erros_envio,
+        "sucesso": sucesso,
+        "mensagem": mensagem_final,
+        "itens": [asdict(item) for item in itens_resultado],
+        "timestamp": _agora_iso(),
+    }
+    persistido, resultado_envio = atualizar_status_lote_envio(
+        lote_id=lote_id,
+        status=status_final,
+        validation_store=validation_store,
+        result_store=result_store,
+        job_id=None,
+        snapshot_hash=snapshot_hash,
+        aprovado_por=aprovado_por,
+        approval_identity=approval_identity,
+        sucesso=sucesso,
+        mensagem=mensagem_final,
+        envio=envio,
+        auditoria_resumo=audit_store.resumo_lote(lote_id),
+        finished_at=_agora_iso(),
+    )
+    if persistido is None:
+        raise KeyError(f"Resultado de validacao do lote '{lote_id}' nao encontrado.")
+
+    return {
+        "lote_id": lote_id,
+        "snapshot_hash": snapshot_hash,
+        "status": status_final,
+        "envio": envio,
+        "send_result": resultado_envio,
+    }
 
 
 def preparar_dependencias_envio(
@@ -1177,6 +1626,8 @@ __all__ = [
     "STATUS_DRY_RUN_COMPLETED",
     "STATUS_SENT",
     "STATUS_SEND_FAILED",
+    "STATUS_AGUARDANDO_EXECUCAO_EXTERNA",
+    "STATUS_EXECUCAO_EXTERNA_CONCLUIDA",
     "TemplateInvalidoError",
     "PreflightTecnicoError",
     "MapaInvalidoError",
@@ -1193,6 +1644,9 @@ __all__ = [
     "consultar_resultado_envio_atual",
     "validar_solicitacao_aprovacao",
     "registrar_solicitacao_aprovacao_envio",
+    "aprovar_lote_para_execucao_externa",
+    "preparar_pacote_execucao",
+    "registrar_resultado_execucao_externa",
     "executar_validacao",
     "executar_aprovacao_e_envio",
 ]

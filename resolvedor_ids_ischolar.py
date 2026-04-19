@@ -100,6 +100,22 @@ def _normalizar_chave(s: str) -> str:
     return n
 
 
+def _normalizar_codigo_turma(valor: Any) -> Optional[str]:
+    """Normaliza turma da planilha para chaves como 1A, 1B, 2A, 2B."""
+    if valor is None:
+        return None
+    texto = str(valor).strip().upper()
+    if not texto:
+        return None
+    texto = re.sub(r"[^0-9A-Z]+", "", texto)
+    return texto or None
+
+
+def _chave_professor_por_turma(codigo_turma: str, frente: str) -> str:
+    """Monta uma chave estavel para entradas turma-especificas do mapa."""
+    return _normalizar_chave(f"{codigo_turma} {frente}")
+
+
 # ---------------------------------------------------------------------------
 # Utilitários de carga e validação dos mapas DE-PARA
 # ---------------------------------------------------------------------------
@@ -226,10 +242,17 @@ def carregar_mapa_professores(caminho: str | Path) -> dict[str, int]:
       "professores": {
         "matematica - prof silva": 301,
         "portugues - profa lima": 302
+      },
+      "professores_por_turma": {
+        "2B": {
+          "matematica a": 66
+        }
       }
     }
 
     Chave: valor do campo `frente_professor` da planilha Madan, normalizado.
+    Entradas em `professores_por_turma` prevalecem quando o lancamento possui
+    campo `turma` (ex: 1A, 1B, 2A, 2B).
 
     Raises:
       FileNotFoundError, json.JSONDecodeError, ValueError (schema inválido)
@@ -254,6 +277,26 @@ def carregar_mapa_professores(caminho: str | Path) -> dict[str, int]:
                 f"id_professor deve ser int; encontrado {id_p!r} para '{frente}' em {caminho}"
             )
         resultado[_normalizar_chave(frente)] = id_p
+
+    por_turma = raw.get("professores_por_turma", {})
+    if por_turma:
+        if not isinstance(por_turma, dict):
+            raise ValueError(f"'professores_por_turma' deve ser um dict em {caminho}")
+        for turma, mapa_turma in por_turma.items():
+            codigo_turma = _normalizar_codigo_turma(turma)
+            if not codigo_turma:
+                raise ValueError(f"Turma invalida em professores_por_turma: {turma!r}")
+            if not isinstance(mapa_turma, dict):
+                raise ValueError(
+                    f"Mapa da turma {turma!r} deve ser um dict em {caminho}"
+                )
+            for frente, id_p in mapa_turma.items():
+                if not isinstance(id_p, int):
+                    raise ValueError(
+                        f"id_professor deve ser int; encontrado {id_p!r} para "
+                        f"'{turma}.{frente}' em {caminho}"
+                    )
+                resultado[_chave_professor_por_turma(codigo_turma, frente)] = id_p
     return resultado
 
 
@@ -291,6 +334,18 @@ def _lookup_avaliacao(
         t = _normalizar_chave(trimestre)   # ex: "t1", "t2", "t3", "1", "2"
         tri_raw = t.lstrip("t") if t.startswith("t") and t[1:].isdigit() else t
     tri_norm = tri_raw if tri_raw else None
+
+    if comp_norm == "recuperacao" and tri_norm == "3":
+        raise ValueError(
+            "recuperacao trimestral T3 nao existe por regra do Madan; "
+            "recuperacao final e tratada como componente "
+            "'recuperacao_final' separadamente."
+        )
+    if comp_norm == "recuperacao_final" and tri_norm not in {None, "3"}:
+        raise ValueError(
+            "recuperacao_final so existe no T3 por regra do Madan; "
+            f"trimestre recebido: {trimestre!r}."
+        )
 
     # Tentativa 1: componente + trimestre
     if tri_norm:
@@ -798,7 +853,26 @@ class ResolvedorIDsHibrido(ResolvedorIDsAbstrato):
             fonte_resolucao["id_avaliacao"] = "nao_resolvido:campo_ausente"
             return None
 
-        id_av = _lookup_avaliacao(self._mapa_avaliacoes, str(componente), str(trimestre) if trimestre else None)
+        try:
+            id_av = _lookup_avaliacao(
+                self._mapa_avaliacoes,
+                str(componente),
+                str(trimestre) if trimestre else None,
+            )
+        except ValueError as exc:
+            comp_norm = _normalizar_chave(str(componente))
+            fonte_regra = "nao_resolvido:regra_recuperacao_t3"
+            if comp_norm == "recuperacao_final":
+                fonte_regra = "nao_resolvido:regra_recuperacao_final_fora_t3"
+            detalhes["avaliacao"] = {
+                "componente": componente,
+                "trimestre": trimestre,
+                "id_encontrado": None,
+            }
+            erros.append(f"[avaliacao_sem_mapeamento] {exc!s}")
+            categorias_erro.append("avaliacao_sem_mapeamento")
+            fonte_resolucao["id_avaliacao"] = fonte_regra
+            return None
 
         detalhes["avaliacao"] = {
             "componente": componente,
@@ -851,11 +925,18 @@ class ResolvedorIDsHibrido(ResolvedorIDsAbstrato):
             return None
 
         chave = _normalizar_chave(str(frente_raw))
-        id_p = self._mapa_professores.get(chave)
+        codigo_turma = _normalizar_codigo_turma(lancamento.get("turma"))
+        chave_turma = _chave_professor_por_turma(codigo_turma, chave) if codigo_turma else None
+        id_p = self._mapa_professores.get(chave_turma) if chave_turma else None
+        fonte_mapa = "mapa_professores_por_turma" if id_p is not None else "mapa_professores"
+        if id_p is None:
+            id_p = self._mapa_professores.get(chave)
 
         detalhes["professor"] = {
             "valor_original": frente_raw,
+            "turma": codigo_turma,
             "chave_normalizada": chave,
+            "chave_turma": chave_turma,
             "id_encontrado": id_p,
         }
 
@@ -874,13 +955,39 @@ class ResolvedorIDsHibrido(ResolvedorIDsAbstrato):
                 fonte_resolucao["id_professor"] = "nao_mapeado:opcional"
                 return None
 
-        fonte_resolucao["id_professor"] = "de_para_local:mapa_professores"
+        fonte_resolucao["id_professor"] = f"de_para_local:{fonte_mapa}"
         return id_p
+
+
+class ResolvedorIDsLocal(ResolvedorIDsHibrido):
+    """
+    Variante local-only para o modo hibrido Apps Script.
+
+    Reusa os mapas locais de disciplina, avaliacao e professor, mas nao chama
+    a API do iScholar para id_matricula. A matricula sera resolvida depois
+    pelo Apps Script via /matricula/pega_alunos, saindo por IPs do Google.
+    """
+
+    def _resolver_matricula(
+        self,
+        lancamento: Mapping[str, Any],
+        erros: list[str],
+        categorias_erro: list[str],
+        fonte_resolucao: dict[str, str],
+        detalhes: dict[str, Any],
+    ) -> Optional[int]:
+        fonte_resolucao["id_matricula"] = "externo:pega_alunos"
+        detalhes["matricula"] = {
+            "modo": "local_only",
+            "observacao": "id_matricula sera resolvido pelo Apps Script via pega_alunos.",
+        }
+        return None
 
 
 __all__ = [
     # Resolvedor principal
     "ResolvedorIDsHibrido",
+    "ResolvedorIDsLocal",
     # Utilitários de carga
     "carregar_mapa_disciplinas",
     "carregar_mapa_avaliacoes",

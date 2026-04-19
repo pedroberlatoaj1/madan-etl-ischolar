@@ -572,5 +572,7 @@ class MotivoStatus:
     AV3_INCOMPLETA                 = "av3_incompleta_precisa_listas_e_avaliacao"
     REC_T3_NAO_EXISTE              = "recuperacao_trimestral_nao_existe_para_t3"
     REC_TRIMESTRAL_CONFIRMADA      = "recuperacao_trimestral_confirmada"
+    REC_FINAL_CONFIRMADA           = "recuperacao_final_confirmada"
+    REC_FINAL_FORA_T3              = "recuperacao_final_fora_do_t3"
     PRESERVADO_AV1_CONTRATO        = "preservado_aplicacao_em_av1_depende_de_contrato_avaliacao_fechada"
 

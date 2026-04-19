@@ -1,0 +1,17 @@
+{
+  "_schema": "mapa_turmas_v1",
+  "_descricao": "Mapa de codigo da turma (planilha Madan) para id_turma do iScholar.",
+  "_instrucoes": [
+    "Chaves: codigo da turma no formato usado no sheet_name do Plano B (ex: 2A_T1 -> turma derivada 2A).",
+    "Valores: id_turma inteiro obtido do iScholar via GET /turma/lista.",
+    "Valor 0 = nao mapeado. O endpoint /lote/{id}/pacote-execucao falhara se a turma do lote apontar para 0.",
+    "Para obter os IDs reais: use a funcao auxiliar listarTurmas_() do google_apps_script.gs (GET /turma/lista),",
+    "ou consulte a planilha 'Envio para Ischolar - OFICIAL 2025 (2).xlsx' aba Turmas_Periodos."
+  ],
+  "turmas": {
+    "1A": 60,
+    "1B": 80,
+    "2A": 67,
+    "2B": 82
+  }
+}
