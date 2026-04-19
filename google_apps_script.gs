@@ -1737,3 +1737,17 @@ function obterArmazenamentoEstado_() {
   // UserProperties evita falhas de DocumentProperties em arquivos recém-convertidos do XLSX.
   return PropertiesService.getUserProperties();
 }
+
+// ---------------------------------------------------------------------------
+// Wrappers públicos (aparecem no dropdown do editor do Apps Script)
+// O Apps Script esconde funções terminadas em "_" — então criamos versões
+// sem underscore para que possam ser executadas manualmente do editor.
+// ---------------------------------------------------------------------------
+
+function setupTriggerVerificacaoToken() {
+  return criarTriggerVerificacaoToken_();
+}
+
+function rodarVerificacaoTokenAgora() {
+  return verificarTokenIScholar_();
+}
