@@ -10,7 +10,7 @@ pytest.importorskip("flask", reason="Os testes do webhook exigem Flask instalado
 
 import worker
 from constants import JobType
-from job_store import claim_next_pending_job, obter_job_por_id
+from job_store import claim_next_pending_job, criar_job, obter_job_por_id, registrar_erro
 from pipeline_runner import (
     STATUS_APPROVAL_JOB_QUEUED,
     STATUS_SENT,
@@ -419,6 +419,70 @@ def test_get_job_status_expoe_finalizado_para_polling(client):
     assert job["job_type"] == JobType.GOOGLE_SHEETS_VALIDATION
     assert job["finalizado"] is False
     assert job["mensagem"]
+
+
+def test_get_status_publico_retorna_json_basico(client):
+    resp = client.get("/status")
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body["service"] == "madan-etl"
+    assert isinstance(body["ok"], bool)
+    assert isinstance(body["timestamp"], str)
+    assert isinstance(body["uptime_segundos"], int)
+    assert isinstance(body["jobs_pending"], int)
+    assert isinstance(body["jobs_processing"], int)
+    assert isinstance(body["jobs_failed_24h"], int)
+    assert body["ultimo_lote_validado"] is None
+    assert body["ultimo_envio"] is None
+    assert body["ultimo_erro"] is None
+    assert "git_commit" in body["deploy"]
+    assert "validacao_pre_envio_mtime" in body["deploy"]
+
+
+def test_get_status_expoe_ultimo_lote_envio_e_erro_truncado(client, app):
+    lote_id = "lote-status"
+    resp = client.post("/webhook/notas", json=_payload(lote_id), headers=_headers())
+    assert resp.status_code == 202
+    _processar_validacao_pendente()
+
+    validacao = ValidacaoLoteStore(app.config["VALIDACAO_LOTE_DB"]).carregar(lote_id)
+    assert validacao is not None
+    aprovacao_resp = client.post(
+        f"/lote/{lote_id}/aprovar",
+        json={"snapshot_hash": validacao.snapshot_hash, "aprovador": "Gestor"},
+        headers=_headers(),
+    )
+    assert aprovacao_resp.status_code == 202
+
+    job_erro = criar_job(
+        source_type="google_sheets",
+        source_identifier=f"erro-status-{uuid.uuid4()}",
+        content_hash=f"hash-erro-{uuid.uuid4()}",
+    )
+    assert job_erro.id is not None
+    registrar_erro(int(job_erro.id), "x" * 280)
+
+    status_resp = client.get("/status")
+    assert status_resp.status_code == 200
+    body = status_resp.get_json()
+
+    assert body["ultimo_lote_validado"] is not None
+    assert body["ultimo_lote_validado"]["lote_id"] == lote_id
+    assert body["ultimo_envio"] is not None
+    assert body["ultimo_envio"]["lote_id"] == lote_id
+    assert body["jobs_failed_24h"] >= 1
+    assert body["ultimo_erro"] is not None
+    assert len(body["ultimo_erro"]["mensagem"]) <= 200
+
+
+def test_get_status_html_renderiza_tabela(client):
+    resp = client.get("/status.html")
+    assert resp.status_code == 200
+    assert resp.content_type.startswith("text/html")
+    html = resp.get_data(as_text=True)
+    assert "Status do servico madan-etl" in html
+    assert "<table class='status-table'>" in html
+    assert 'body class="ok"' in html
 
 
 # ---------------------------------------------------------------------------

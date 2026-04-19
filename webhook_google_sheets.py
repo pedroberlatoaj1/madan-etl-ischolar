@@ -7,17 +7,24 @@ Semantica suportada:
 - POST /lote/<lote_id>/aprovar
 - GET  /lote/<lote_id>/resultado-envio
 - GET  /job/<job_id>/status
+- GET  /status
+- GET  /status.html
 """
 
 from __future__ import annotations
 
+import html as html_lib
 import hmac
 import os
 import re
+import sqlite3
+import subprocess
 import sys
 import time
 from collections import deque
-from functools import wraps
+from datetime import datetime, timedelta, timezone
+from functools import lru_cache, wraps
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 try:
@@ -85,6 +92,9 @@ WEBHOOK_SECRET_INSECURE_VALUES = frozenset(
 SOURCE_TYPE_GOOGLE_SHEETS = "google_sheets"
 POLLING_RECOMENDADO_MS = 5000
 MAX_ID_FIELD_LENGTH = 255
+STUCK_JOB_THRESHOLD_SECONDS = 30 * 60
+FAILED_JOBS_WINDOW_HOURS = 24
+APP_START_TIME = time.time()
 
 
 def _segredo_valido(segredo_recebido: str, segredo_configurado: str) -> bool:
@@ -134,6 +144,54 @@ def _payload_json() -> dict[str, Any]:
     return payload
 
 
+def _agora_iso_utc() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def _to_int(valor: Any, padrao: int = 0) -> int:
+    try:
+        return int(valor)
+    except (TypeError, ValueError):
+        return padrao
+
+
+def _truncar_mensagem(mensagem: Any, limite: int = 200) -> str:
+    texto = str(mensagem or "").replace("\r", " ").replace("\n", " ").strip()
+    return texto[:limite]
+
+
+@lru_cache(maxsize=1)
+def _obter_git_commit_curto() -> Optional[str]:
+    raiz_repo = Path(__file__).resolve().parent
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=str(raiz_repo),
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=1.0,
+        )
+        if proc.returncode != 0:
+            return None
+        commit = str(proc.stdout or "").strip()
+        return commit or None
+    except Exception:
+        return None
+
+
+def _obter_validacao_pre_envio_mtime_iso() -> Optional[str]:
+    arquivo = Path(__file__).resolve().parent / "validacao_pre_envio.py"
+    try:
+        stat = arquivo.stat()
+    except FileNotFoundError:
+        return None
+    except OSError:
+        return None
+    mtime = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).replace(microsecond=0)
+    return mtime.isoformat()
+
+
 def _stores() -> tuple[ValidacaoLoteStore, AprovacaoLoteStore, ResultadoEnvioLoteStore]:
     return (
         ValidacaoLoteStore(current_app.config["VALIDACAO_LOTE_DB"]),
@@ -154,6 +212,289 @@ def _job_payload_defaults() -> dict[str, Any]:
         "mapa_professores": current_app.config["MAPA_PROFESSORES"],
         "mapa_turmas": current_app.config["MAPA_TURMAS"],
     }
+
+
+def _obter_ultimo_lote_validado(validation_store: ValidacaoLoteStore) -> Optional[dict[str, Any]]:
+    try:
+        ids = validation_store.listar_ids(limit=1)
+        if not ids:
+            return None
+        ultimo = validation_store.carregar(ids[0])
+    except Exception:
+        log.exception("Falha ao consultar ultimo lote validado.")
+        return None
+
+    if ultimo is None:
+        return None
+
+    resumo = ultimo.resumo if isinstance(ultimo.resumo, dict) else {}
+    total_sendaveis = _to_int(resumo.get("total_sendaveis"), padrao=-1)
+    if total_sendaveis < 0:
+        total_sendaveis = len(ultimo.itens_sendaveis or [])
+
+    return {
+        "lote_id": ultimo.lote_id,
+        "timestamp": ultimo.updated_at or ultimo.created_at,
+        "sendaveis": max(total_sendaveis, 0),
+        "status": ultimo.status,
+    }
+
+
+def _obter_ultimo_envio(result_store: ResultadoEnvioLoteStore) -> Optional[dict[str, Any]]:
+    try:
+        ids = result_store.listar_ids(limit=1)
+        if not ids:
+            return None
+        ultimo = result_store.carregar(ids[0])
+    except Exception:
+        log.exception("Falha ao consultar ultimo envio.")
+        return None
+
+    if ultimo is None:
+        return None
+
+    total_erros = _to_int(ultimo.total_erros_resolucao) + _to_int(ultimo.total_erros_envio)
+    return {
+        "lote_id": ultimo.lote_id,
+        "timestamp": ultimo.finished_at or ultimo.updated_at or ultimo.created_at,
+        "total_enviados": _to_int(ultimo.quantidade_enviada),
+        "total_erros": total_erros,
+        "status": ultimo.status,
+    }
+
+
+def _coletar_metricas_jobs(job_db_path: str) -> dict[str, Any]:
+    metricas: dict[str, Any] = {
+        "jobs_pending": 0,
+        "jobs_processing": 0,
+        "jobs_failed_24h": 0,
+        "stuck_jobs_over_30min": 0,
+        "ultimo_erro": None,
+        "coleta_ok": True,
+    }
+    agora = datetime.now(timezone.utc)
+    cutoff_24h = (agora - timedelta(hours=FAILED_JOBS_WINDOW_HOURS)).replace(microsecond=0).isoformat()
+    cutoff_stuck = (agora - timedelta(seconds=STUCK_JOB_THRESHOLD_SECONDS)).replace(microsecond=0).isoformat()
+
+    try:
+        with sqlite3.connect(job_db_path, timeout=1.0) as conn:
+            conn.row_factory = sqlite3.Row
+            tabela_jobs = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='jobs' LIMIT 1;"
+            ).fetchone()
+            if tabela_jobs is None:
+                return metricas
+
+            status_rows = conn.execute(
+                "SELECT status, COUNT(*) AS total FROM jobs GROUP BY status;"
+            ).fetchall()
+            status_counts = {str(row["status"]): _to_int(row["total"]) for row in status_rows}
+
+            metricas["jobs_pending"] = _to_int(status_counts.get(JobStatus.PENDING))
+            metricas["jobs_processing"] = _to_int(status_counts.get(JobStatus.PROCESSING))
+
+            falhas_row = conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM jobs
+                WHERE status = ?
+                  AND datetime(updated_at) >= datetime(?)
+                """,
+                (JobStatus.ERROR, cutoff_24h),
+            ).fetchone()
+            metricas["jobs_failed_24h"] = _to_int(falhas_row["total"] if falhas_row else 0)
+
+            stuck_row = conn.execute(
+                """
+                SELECT COUNT(*) AS total
+                FROM jobs
+                WHERE status = ?
+                  AND datetime(updated_at) <= datetime(?)
+                """,
+                (JobStatus.PROCESSING, cutoff_stuck),
+            ).fetchone()
+            metricas["stuck_jobs_over_30min"] = _to_int(stuck_row["total"] if stuck_row else 0)
+
+            erro_row = conn.execute(
+                """
+                SELECT
+                    updated_at,
+                    COALESCE(last_error, error_message) AS mensagem
+                FROM jobs
+                WHERE status = ?
+                  AND COALESCE(last_error, error_message) IS NOT NULL
+                ORDER BY datetime(updated_at) DESC, id DESC
+                LIMIT 1
+                """,
+                (JobStatus.ERROR,),
+            ).fetchone()
+            if erro_row is not None:
+                metricas["ultimo_erro"] = {
+                    "timestamp": erro_row["updated_at"],
+                    "mensagem": _truncar_mensagem(erro_row["mensagem"], limite=200),
+                }
+    except Exception as exc:
+        log.exception("Falha ao coletar metricas de jobs no endpoint /status.")
+        metricas["coleta_ok"] = False
+        if metricas["ultimo_erro"] is None:
+            metricas["ultimo_erro"] = {
+                "timestamp": _agora_iso_utc(),
+                "mensagem": _truncar_mensagem(exc, limite=200),
+            }
+
+    return metricas
+
+
+def _montar_status_payload() -> dict[str, Any]:
+    validation_store, _, result_store = _stores()
+    job_db_path = str(
+        current_app.config.get("JOB_DB_PATH")
+        or getattr(config, "JOB_DB_PATH", "jobs.sqlite3")
+    )
+    metricas_jobs = _coletar_metricas_jobs(job_db_path)
+    ok = (
+        bool(metricas_jobs.get("coleta_ok", False))
+        and _to_int(metricas_jobs.get("jobs_processing")) < 5
+        and _to_int(metricas_jobs.get("jobs_failed_24h")) < 10
+        and _to_int(metricas_jobs.get("stuck_jobs_over_30min")) == 0
+    )
+
+    return {
+        "service": "madan-etl",
+        "ok": ok,
+        "timestamp": _agora_iso_utc(),
+        "uptime_segundos": max(0, int(time.time() - APP_START_TIME)),
+        "ultimo_lote_validado": _obter_ultimo_lote_validado(validation_store),
+        "ultimo_envio": _obter_ultimo_envio(result_store),
+        "jobs_pending": _to_int(metricas_jobs.get("jobs_pending")),
+        "jobs_processing": _to_int(metricas_jobs.get("jobs_processing")),
+        "jobs_failed_24h": _to_int(metricas_jobs.get("jobs_failed_24h")),
+        "ultimo_erro": metricas_jobs.get("ultimo_erro"),
+        "deploy": {
+            "git_commit": _obter_git_commit_curto(),
+            "validacao_pre_envio_mtime": _obter_validacao_pre_envio_mtime_iso(),
+        },
+    }
+
+
+def _status_html_valor(valor: Any) -> str:
+    if isinstance(valor, dict):
+        return _status_html_tabela(valor)
+    if valor is None:
+        return "<span class='status-null'>None</span>"
+    if isinstance(valor, bool):
+        css = "status-bool-true" if valor else "status-bool-false"
+        return f"<span class='{css}'>{str(valor).lower()}</span>"
+    return html_lib.escape(str(valor))
+
+
+def _status_html_tabela(dados: dict[str, Any]) -> str:
+    linhas = []
+    for chave, valor in dados.items():
+        linhas.append(
+            "<tr>"
+            f"<th>{html_lib.escape(str(chave))}</th>"
+            f"<td>{_status_html_valor(valor)}</td>"
+            "</tr>"
+        )
+    return "<table class='status-table'>" + "".join(linhas) + "</table>"
+
+
+def _render_status_html(payload: dict[str, Any]) -> str:
+    pagina_css = "ok" if payload.get("ok") else "nok"
+    status_label = "OK" if payload.get("ok") else "NAO OK"
+    tabela = _status_html_tabela(payload)
+    return f"""<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Status madan-etl</title>
+  <style>
+    body {{
+      margin: 0;
+      font-family: "Segoe UI", Arial, sans-serif;
+      color: #122024;
+    }}
+    body.ok {{ background: #dff6e4; }}
+    body.nok {{ background: #f8dada; }}
+    .wrap {{
+      max-width: 960px;
+      margin: 24px auto;
+      padding: 20px;
+      background: rgba(255, 255, 255, 0.92);
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+    }}
+    .header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 16px;
+      margin-bottom: 16px;
+    }}
+    .header h1 {{
+      margin: 0;
+      font-size: 1.4rem;
+    }}
+    .pill {{
+      font-size: 0.85rem;
+      font-weight: 700;
+      border-radius: 999px;
+      padding: 4px 10px;
+      background: #ffffff;
+      border: 1px solid rgba(0, 0, 0, 0.15);
+    }}
+    table.status-table {{
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+    }}
+    .status-table th,
+    .status-table td {{
+      border: 1px solid #dde5e8;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+      font-size: 0.92rem;
+      word-break: break-word;
+    }}
+    .status-table th {{
+      width: 240px;
+      background: #f4f8f9;
+      font-weight: 600;
+    }}
+    .status-null {{
+      color: #6e7b82;
+      font-style: italic;
+    }}
+    .status-bool-true {{
+      color: #0f6a2f;
+      font-weight: 700;
+    }}
+    .status-bool-false {{
+      color: #9d1b1b;
+      font-weight: 700;
+    }}
+    .foot {{
+      margin-top: 12px;
+      font-size: 0.82rem;
+      color: #41535a;
+    }}
+  </style>
+</head>
+<body class="{pagina_css}">
+  <main class="wrap">
+    <div class="header">
+      <h1>Status do servico madan-etl</h1>
+      <span class="pill">{status_label}</span>
+    </div>
+    {tabela}
+    <div class="foot">Atualizado em {html_lib.escape(str(payload.get("timestamp")))}</div>
+  </main>
+</body>
+</html>
+"""
 
 
 def _request_id() -> str:
@@ -447,6 +788,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
         LOTE_ITENS_DB=os.getenv("LOTE_ITENS_DB", "lote_itens.db"),
         ENVIO_LOTE_AUDIT_DB=os.getenv("ENVIO_LOTE_AUDIT_DB", "envio_lote_audit.db"),
         RESULTADO_ENVIO_LOTE_DB=os.getenv("RESULTADO_ENVIO_LOTE_DB", "resultados_envio_lote.db"),
+        JOB_DB_PATH=os.getenv("JOB_DB_PATH", getattr(config, "JOB_DB_PATH", "jobs.sqlite3")),
         MAPA_DISCIPLINAS=os.getenv("MAPA_DISCIPLINAS", "mapa_disciplinas.json"),
         MAPA_AVALIACOES=os.getenv("MAPA_AVALIACOES", "mapa_avaliacoes.json"),
         MAPA_PROFESSORES=os.getenv("MAPA_PROFESSORES", "mapa_professores.json"),
@@ -473,6 +815,15 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
             ),
             200,
         )
+
+    @app.get("/status")
+    def status():
+        return jsonify(_montar_status_payload()), 200
+
+    @app.get("/status.html")
+    def status_html():
+        payload = _montar_status_payload()
+        return _render_status_html(payload), 200, {"Content-Type": "text/html; charset=utf-8"}
 
     @app.post("/webhook/notas")
     @requer_autenticacao
