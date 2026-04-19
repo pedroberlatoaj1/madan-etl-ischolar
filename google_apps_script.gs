@@ -46,6 +46,7 @@ const ISCHOLAR_TEMPO_MAX_MS = 4 * 60 * 1000;
 const ISCHOLAR_MAX_PAGINAS_ALUNOS = 20;
 const EMAIL_NOTIFICACOES = "marina@madan.com.br";
 const EMAIL_BCC = "pedroberlatoaj1@gmail.com";
+const EMAIL_ALERTA_TOKEN_ISCHOLAR = "pedroberlatoaj1@gmail.com";
 const HABILITAR_NOTIFICACOES = true;
 
 // Padrão reconhecido como aba trimestral Plano B: ex. "2A_T1", "1B_T3"
@@ -62,6 +63,8 @@ const PROP_APROVACAO_JOB_ID = "etl_ischolar_aprovacao_job_id";
 const PROP_ULTIMO_STATUS = "etl_ischolar_ultimo_status";
 const PROP_ULTIMA_ABA = "etl_ischolar_ultima_aba";
 const PROP_NOTIFICACAO_PREFIX = "etl_ischolar_notificado";
+const PROP_ALERTA_TOKEN_ISCHOLAR_DIA = "etl_ischolar_token_alerta_dia";
+const TRIGGER_VERIFICACAO_TOKEN_ISCHOLAR = "verificarTokenIScholar_";
 
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -1505,6 +1508,207 @@ function mensagemErroHumana_(err) {
 
 function valorOuZero_(valor) {
   return valor || valor === 0 ? valor : 0;
+}
+
+function decodificarExpiracaoJwt_(token) {
+  try {
+    var partes = String(token || "").trim().split(".");
+    if (partes.length < 2) {
+      return null;
+    }
+
+    var payloadBase64 = String(partes[1] || "").trim();
+    if (!payloadBase64) {
+      return null;
+    }
+
+    // JWT usa base64url no payload; converter para base64 padrao com padding.
+    payloadBase64 = payloadBase64.replace(/-/g, "+").replace(/_/g, "/");
+    while (payloadBase64.length % 4 !== 0) {
+      payloadBase64 += "=";
+    }
+
+    var payloadBytes = Utilities.base64Decode(payloadBase64);
+    var payloadJson = Utilities.newBlob(payloadBytes).getDataAsString("UTF-8");
+    var payload = JSON.parse(payloadJson);
+    var expSegundos = Number(payload && payload.exp);
+    if (!isFinite(expSegundos) || expSegundos <= 0) {
+      return null;
+    }
+    return new Date(expSegundos * 1000);
+  } catch (err) {
+    Logger.log("[decodificarExpiracaoJwt_] parse de exp falhou: " + mensagemErroHumana_(err));
+    return null;
+  }
+}
+
+function verificarTokenIScholar_() {
+  var agora = new Date();
+  var msDia = 24 * 60 * 60 * 1000;
+  var timezone = Session.getScriptTimeZone() || "America/Sao_Paulo";
+  var props = PropertiesService.getScriptProperties();
+  var token = "";
+
+  try {
+    token = garantirTokenIScholar_();
+  } catch (errToken) {
+    token = "";
+    Logger.log("[verificarTokenIScholar_] token ausente: " + mensagemErroHumana_(errToken));
+  }
+
+  var expiracao = decodificarExpiracaoJwt_(token);
+  var assunto = "";
+  var statusResumo = "";
+  var diasRestantes = null;
+  var expiracaoFormatada = "";
+
+  if (!token) {
+    assunto = "\uD83D\uDEA8 EXPIRADO \u2014 Token iScholar inv\u00E1lido";
+    statusResumo = "Token ausente em Script Properties (ISCHOLAR_TOKEN).";
+  } else if (!expiracao) {
+    assunto = "[Madan ETL] \u26A0\uFE0F N\u00E3o foi poss\u00EDvel ler expira\u00E7\u00E3o do token iScholar";
+    statusResumo = "Formato do JWT inesperado, sem campo exp valido.";
+  } else {
+    var diffMs = expiracao.getTime() - agora.getTime();
+    expiracaoFormatada = Utilities.formatDate(expiracao, timezone, "dd/MM/yyyy HH:mm:ss") + " (" + timezone + ")";
+
+    if (diffMs <= 0) {
+      diasRestantes = 0;
+      assunto = "\uD83D\uDEA8 EXPIRADO \u2014 Token iScholar inv\u00E1lido";
+      statusResumo = "Token expirado.";
+    } else {
+      diasRestantes = Math.max(1, Math.floor(diffMs / msDia));
+      if (diffMs < 7 * msDia) {
+        assunto = "\uD83D\uDEA8 URGENTE \u2014 Token iScholar expira em " + diasRestantes + " dias";
+        statusResumo = "Token perto do vencimento.";
+      } else if (diffMs < 30 * msDia) {
+        assunto = "[Madan ETL] \u26A0\uFE0F Token iScholar expira em " + diasRestantes + " dias";
+        statusResumo = "Token em janela de alerta (menos de 30 dias).";
+      } else {
+        Logger.log(
+          "[verificarTokenIScholar_] token dentro da validade: expira em " +
+            diasRestantes +
+            " dias (sem alerta)."
+        );
+        return {
+          alerta_enviado: false,
+          motivo: "fora_da_janela",
+          dias_restantes: diasRestantes,
+          expiracao: expiracao
+        };
+      }
+    }
+  }
+
+  var diaHoje = Utilities.formatDate(agora, timezone, "yyyy-MM-dd");
+  var ultimoDiaEnviado = String(props.getProperty(PROP_ALERTA_TOKEN_ISCHOLAR_DIA) || "");
+  if (ultimoDiaEnviado === diaHoje) {
+    Logger.log("[verificarTokenIScholar_] alerta ja enviado hoje (" + diaHoje + "). Dedupe aplicado.");
+    return {
+      alerta_enviado: false,
+      motivo: "dedupe_diario",
+      assunto: assunto
+    };
+  }
+
+  var corpoHtml = montarHtmlAlertaTokenIScholar_({
+    status: statusResumo,
+    expiracao: expiracaoFormatada,
+    diasRestantes: diasRestantes
+  });
+  var enviado = enviarAlertaTokenIScholar_(assunto, corpoHtml);
+  if (!enviado) {
+    return {
+      alerta_enviado: false,
+      motivo: "falha_envio",
+      assunto: assunto
+    };
+  }
+
+  props.setProperty(PROP_ALERTA_TOKEN_ISCHOLAR_DIA, diaHoje);
+  Logger.log("[verificarTokenIScholar_] alerta enviado e dedupe diario registrado.");
+  return {
+    alerta_enviado: true,
+    assunto: assunto,
+    expiracao: expiracao
+  };
+}
+
+function montarHtmlAlertaTokenIScholar_(dados) {
+  var info = dados || {};
+  var status = String(info.status || "Token em estado de atencao.");
+  var expiracao = String(info.expiracao || "Nao foi possivel determinar.");
+  var diasRestantes = info.diasRestantes;
+  var diasTexto = "-";
+  if (diasRestantes === 0 || diasRestantes) {
+    diasTexto = String(diasRestantes);
+  }
+
+  var linhas = [];
+  linhas.push("<p><strong>Alerta automatico do monitor de token iScholar.</strong></p>");
+  linhas.push("<p><strong>Status:</strong> " + escaparHtml_(status) + "</p>");
+  linhas.push("<p><strong>Expiracao:</strong> " + escaparHtml_(expiracao) + "</p>");
+  linhas.push("<p><strong>Dias restantes:</strong> " + escaparHtml_(diasTexto) + "</p>");
+  linhas.push("<p><strong>Passo a passo para renovar:</strong></p>");
+  linhas.push("<ol>");
+  linhas.push("<li>Acesse o iScholar com usuario autorizado para integracoes.</li>");
+  linhas.push("<li>Gere um novo JWT para a escola/codigo <code>madan</code>.</li>");
+  linhas.push("<li>No Google Sheets, abra <code>Extensoes &gt; Apps Script</code>.</li>");
+  linhas.push("<li>Em <code>Project Settings &gt; Script properties</code>, atualize a chave <code>ISCHOLAR_TOKEN</code>.</li>");
+  linhas.push("<li>Salve e execute <code>verificarTokenIScholar_()</code> para confirmar a nova expiracao.</li>");
+  linhas.push("<li>Teste sem afetar producao com <code>Validar Lote</code> + <code>Simular via Apps Script</code>.</li>");
+  linhas.push("</ol>");
+  linhas.push("<p>Importante: nao compartilhe o token em chats, logs ou screenshots.</p>");
+  return linhas.join("");
+}
+
+function enviarAlertaTokenIScholar_(assunto, corpoHtml) {
+  if (!HABILITAR_NOTIFICACOES) {
+    Logger.log("[enviarAlertaTokenIScholar_] notificacoes desabilitadas.");
+    return false;
+  }
+
+  var destinatario = String(EMAIL_ALERTA_TOKEN_ISCHOLAR || "").trim();
+  if (!destinatario) {
+    Logger.log("[enviarAlertaTokenIScholar_] destinatario vazio. Email nao enviado.");
+    return false;
+  }
+
+  try {
+    GmailApp.sendEmail(destinatario, String(assunto || "[Madan ETL] Alerta token iScholar"), htmlParaTexto_(corpoHtml), {
+      htmlBody: String(corpoHtml || "<p>Sem conteudo.</p>")
+    });
+    Logger.log("[enviarAlertaTokenIScholar_] alerta enviado para " + destinatario + ".");
+    return true;
+  } catch (err) {
+    Logger.log("[enviarAlertaTokenIScholar_] falha no envio: " + mensagemErroHumana_(err));
+    return false;
+  }
+}
+
+function criarTriggerVerificacaoToken_() {
+  var removidos = 0;
+  ScriptApp.getProjectTriggers().forEach(function(trigger) {
+    if (trigger.getHandlerFunction && trigger.getHandlerFunction() === TRIGGER_VERIFICACAO_TOKEN_ISCHOLAR) {
+      ScriptApp.deleteTrigger(trigger);
+      removidos += 1;
+    }
+  });
+
+  ScriptApp.newTrigger(TRIGGER_VERIFICACAO_TOKEN_ISCHOLAR)
+    .timeBased()
+    .onWeekDay(ScriptApp.WeekDay.MONDAY)
+    .atHour(9)
+    .create();
+
+  Logger.log(
+    "[criarTriggerVerificacaoToken_] trigger semanal criado/atualizado para segunda-feira as 9h. Removidos=" +
+      removidos
+  );
+  return {
+    triggers_removidos: removidos,
+    funcao: TRIGGER_VERIFICACAO_TOKEN_ISCHOLAR
+  };
 }
 
 function carregarEstadoLocal_() {
