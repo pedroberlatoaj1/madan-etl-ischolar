@@ -615,3 +615,10 @@ def test_validacao_pre_envio_aceita_recuperacao_final_sem_peso_e_valor_ponderado
         l for l in res["lancamentos_validos"] if l["componente"] == "recuperacao_final"
     )
     assert rec_final["sendavel"] is True
+
+
+def test_constante_componentes_ponderacao_consistente():
+    from validacao_pre_envio import COMPONENTES_QUE_EXIGEM_PONDERACAO_LOCAL
+
+    assert "av1" in COMPONENTES_QUE_EXIGEM_PONDERACAO_LOCAL
+    assert "recuperacao" not in COMPONENTES_QUE_EXIGEM_PONDERACAO_LOCAL

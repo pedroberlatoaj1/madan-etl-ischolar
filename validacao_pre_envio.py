@@ -62,10 +62,22 @@ STATUS_APROVADO       = "apto_para_aprovacao"
 STATUS_COM_AVISOS     = "apto_com_avisos"
 STATUS_BLOQUEADO_ERROS = "bloqueado_por_erros"
 
+COMPONENTES_QUE_EXIGEM_PONDERACAO_LOCAL = frozenset({"av1", "av2", "av3", "simulado"})
+"""
+Componentes cuja ponderação é calculada PELO PIPELINE antes do envio.
+Para esses, peso_avaliacao e valor_ponderado são obrigatórios.
+Componentes fora desse conjunto (ex.: "recuperacao", "recuperacao_final")
+são enviados sem ponderação — o iScholar calcula.
+"""
+
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+def _componente_exige_ponderacao_local(componente: Any) -> bool:
+    return componente in COMPONENTES_QUE_EXIGEM_PONDERACAO_LOCAL
+
 
 def _try_float(value: Any) -> Optional[float]:
     if is_blank(value):
@@ -126,7 +138,7 @@ def _is_sendavel(l: Mapping[str, Any]) -> bool:
     if l.get("subcomponente") is not None:
         return False
     componente = l.get("componente")
-    if componente in {"av1", "av2", "av3", "simulado"}:
+    if _componente_exige_ponderacao_local(componente):
         return (l.get("peso_avaliacao") is not None) and (l.get("valor_ponderado") is not None)
     if componente in {"recuperacao", "recuperacao_final"}:
         # A ponderacao da recuperacao e feita pelo iScholar. O pipeline so
@@ -212,7 +224,7 @@ def _validar_campos_obrigatorios_lancamento(l: Mapping[str, Any]) -> list[Issue]
     # Campos adicionais exigidos apenas para lançamentos sendáveis.
     if _is_sendavel(l):
         campos_sendaveis = ("nota_ajustada_0a10",)
-        if l.get("componente") in {"av1", "av2", "av3", "simulado"}:
+        if _componente_exige_ponderacao_local(l.get("componente")):
             campos_sendaveis += ("peso_avaliacao", "valor_ponderado")
         for campo in campos_sendaveis:
             if l.get(campo) is None:
