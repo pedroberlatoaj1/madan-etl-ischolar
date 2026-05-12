@@ -1241,10 +1241,16 @@ app = create_app()
 
 if __name__ == "__main__":
     _validar_segredo_webhook(app.config["WEBHOOK_SECRET"])
+
+    # Inicializa o schema do PostgreSQL (idempotente)
+    from db import init_schema
+    init_schema()
+
     from waitress import serve
 
-    log.info("Servidor webhook ETL iScholar iniciado na porta 5000 (Waitress WSGI)")
+    port = int(os.environ.get("PORT", "5000"))
+    log.info("Servidor webhook ETL iScholar iniciado na porta %d (Waitress WSGI)", port)
     log.info("Endpoint: POST /webhook/notas")
     log.info("Health:   GET  /health")
-    log.info("Snapshots: %s", config.SNAPSHOTS_DIR)
-    serve(app, host="0.0.0.0", port=5000)
+    log.info("Snapshots: Cloudflare R2 (bucket=%s)", os.environ.get("R2_BUCKET_NAME", "madan-etl-snapshots"))
+    serve(app, host="0.0.0.0", port=port)

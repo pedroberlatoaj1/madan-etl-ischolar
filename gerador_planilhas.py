@@ -201,37 +201,117 @@ def descobrir_tabs_para_turma(serie: int, turma_letra: str) -> list[TabConfig]:
 # Descoberta e construção de colunas — formato wide novo
 # ---------------------------------------------------------------------------
 
-def descobrir_grupos_wide(serie: int, turma_letra: str) -> list[tuple[str, str]]:
+# Matriz oficial Madan 2026 (1º e 2º anos do EM).
+# Fonte de verdade do pedagógico — aplicada igualmente a 1A, 1B, 2A, 2B.
+#
+# Para cada disciplina:
+#   - lista de frentes (ex: ["A", "B"]) → gera "Frente A", "Frente B"
+#   - None → gera "Frente Única"
+#
+# Disciplinas NÃO listadas aqui são EXCLUÍDAS da planilha (ex: Inglês, Xadrez).
+DISCIPLINAS_OFICIAIS_2026: dict[str, list[str] | None] = {
+    "arte":            None,
+    "literatura":      None,
+    "filosofia":       None,
+    "sociologia":      None,
+    "gramatica":       None,
+    "redacao":         None,
+    "educacao fisica": None,
+    "ingles":          None,
+    "geografia":       ["A", "B"],
+    "historia":        ["A", "B"],
+    "fisica":          ["A", "B"],
+    "quimica":         ["A", "B"],
+    "biologia":        ["A", "B"],
+    "matematica":      ["A", "B", "C"],
+}
+
+# Compat: mantido como subset (apenas disciplinas com >=2 frentes), caso algum teste
+# legacy importe esse nome.
+FRENTES_FIXAS_POR_DISCIPLINA: dict[str, list[str]] = {
+    slug: frentes
+    for slug, frentes in DISCIPLINAS_OFICIAIS_2026.items()
+    if frentes is not None
+}
+
+# ---------------------------------------------------------------------------
+# Mapa de professores por (série, disciplina, frente) — fonte de verdade 2026.
+# Chave: (série int, disc_slug str, frente_letra str)
+#   frente_letra = "A" | "B" | "C" | "U" (Única)
+# Séries 1A e 1B compartilham série=1; 2A e 2B compartilham série=2.
+# ---------------------------------------------------------------------------
+PROFESSOR_DISPLAY: dict[tuple[int, str, str], str] = {
+    # ── Série 1 (1A e 1B) ──────────────────────────────────────────────────
+    (1, "arte",            "U"): "Lenice",
+    (1, "literatura",      "U"): "Iana",
+    (1, "gramatica",       "U"): "Nery",
+    (1, "filosofia",       "U"): "Bravin",
+    (1, "sociologia",      "U"): "Bravin",
+    (1, "ingles",          "U"): "Cristina",
+    (1, "educacao fisica", "U"): "João Paulo",
+    (1, "redacao",         "U"): "Bia",
+    (1, "biologia",        "A"): "Jamine",
+    (1, "biologia",        "B"): "Mayara",
+    (1, "fisica",          "A"): "Cavaco",
+    (1, "fisica",          "B"): "Pezzin",
+    (1, "geografia",       "A"): "Moreto",
+    (1, "geografia",       "B"): "Carla",
+    (1, "historia",        "A"): "Adriano",
+    (1, "historia",        "B"): "Alba",
+    (1, "matematica",      "A"): "Luan",
+    (1, "matematica",      "B"): "Felipe",
+    (1, "matematica",      "C"): "Daniel",
+    (1, "quimica",         "A"): "Leo",
+    (1, "quimica",         "B"): "Marcus",
+    # ── Série 2 (2A e 2B) ──────────────────────────────────────────────────
+    (2, "arte",            "U"): "Lenice",
+    (2, "literatura",      "U"): "Iana",
+    (2, "gramatica",       "U"): "Nery",
+    (2, "filosofia",       "U"): "Bravin",
+    (2, "sociologia",      "U"): "Bravin",
+    (2, "ingles",          "U"): "Cristina",
+    (2, "educacao fisica", "U"): "João Paulo",
+    (2, "redacao",         "U"): "Sergio",
+    (2, "biologia",        "A"): "Perrone",
+    (2, "biologia",        "B"): "Mayara",
+    (2, "fisica",          "A"): "Cavaco",
+    (2, "fisica",          "B"): "Pezzin",
+    (2, "geografia",       "A"): "Carla",
+    (2, "geografia",       "B"): "Moreto",
+    (2, "historia",        "A"): "Adriano",
+    (2, "historia",        "B"): "Alba",
+    (2, "matematica",      "A"): "Daniel",
+    (2, "matematica",      "B"): "Luan",
+    (2, "matematica",      "C"): "Felipe",
+    (2, "quimica",         "A"): "Leo",
+    (2, "quimica",         "B"): "Marcus",
+}
+
+
+def descobrir_grupos_wide(serie: int, turma_letra: str) -> list[tuple[str, str, str | None]]:
     """
-    Retorna lista ordenada de (disciplina_display, frente_display) para a turma.
+    Retorna lista ordenada de (disciplina_display, frente_display, professor_display)
+    para a turma.
 
-    Regras de mapeamento de frentes:
-    - Disciplina com 1 entrada (frente="" bullet ou único código) → "Frente Única"
-    - Disciplina com N entradas → "Frente A", "Frente B", ... (ordem alfabética dos códigos)
+    A matriz oficial Madan 2026 (DISCIPLINAS_OFICIAIS_2026) é a única fonte de
+    verdade — aplicada igualmente a todas as turmas (1A, 1B, 2A, 2B).
+    Disciplinas não listadas são EXCLUÍDAS da planilha.
 
-    Os nomes gerados são compatíveis com parsear_coluna_dinamica() e com as
-    chaves de mapa_professores.json via construir_frente_professor().
+    professor_display vem de PROFESSOR_DISPLAY e é None se não mapeado.
     """
-    tabs = descobrir_tabs_para_turma(serie, turma_letra)
+    grupos: list[tuple[str, str, str | None]] = []
 
-    por_disc: dict[str, list[str]] = {}
-    for tab in tabs:
-        por_disc.setdefault(tab.disciplina, []).append(tab.frente)
-
-    grupos: list[tuple[str, str]] = []
-    letras = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
-
-    for disc_slug in sorted(por_disc.keys()):
-        frentes_raw = sorted(set(por_disc[disc_slug]))
+    for disc_slug in sorted(DISCIPLINAS_OFICIAIS_2026.keys()):
         disc_display = DISCIPLINA_DISPLAY.get(disc_slug, disc_slug.capitalize())
+        frentes = DISCIPLINAS_OFICIAIS_2026[disc_slug]
 
-        if len(frentes_raw) == 1:
-            # Um único professor/frente → Frente Única
-            grupos.append((disc_display, "Frente Única"))
+        if frentes is None:
+            prof = PROFESSOR_DISPLAY.get((serie, disc_slug, "U"))
+            grupos.append((disc_display, "Frente Única", prof))
         else:
-            # Múltiplas frentes → ordenar e atribuir letras A, B, C...
-            for i in range(len(frentes_raw)):
-                grupos.append((disc_display, f"Frente {letras[i]}"))
+            for letra in frentes:
+                prof = PROFESSOR_DISPLAY.get((serie, disc_slug, letra))
+                grupos.append((disc_display, f"Frente {letra}", prof))
 
     return grupos
 
@@ -243,29 +323,34 @@ def _tipos_avaliacao_cabecalho(*, incluir_recuperacao_final: bool) -> list[str]:
 
 
 def construir_cabecalho_wide(
-    grupos: list[tuple[str, str]],
+    grupos: list[tuple[str, str, str | None]],
     *,
     incluir_recuperacao_final: bool = False,
 ) -> list[str]:
     """
     Constrói a lista completa de nomes de colunas para o formato wide.
 
-    Estrutura:
-        ["Estudante", "RA", "Turma", "Trimestre",
-         "Disciplina X - Frente A - AV 1 Obj",
-         "Disciplina X - Frente A - AV 1 Disc",
-         ...]
+    Estrutura com professor mapeado:
+        "Matemática - Daniel (Frente A) - AV 1 Obj"
+        "Arte - Lenice (Frente Única) - AV 1 Obj"
 
-    Os nomes dinâmicos são gerados no padrão exato que parsear_coluna_dinamica()
-    em wide_format_adapter.py reconhece.
+    Estrutura sem professor (fallback legado):
+        "Matemática - Frente A - AV 1 Obj"
+
+    Os nomes dinâmicos são reconhecidos por parsear_coluna_dinamica()
+    em wide_format_adapter.py em ambos os formatos.
     """
     cabecalho = list(COLUNAS_FIXAS_WIDE)
     tipos_avaliacao = _tipos_avaliacao_cabecalho(
         incluir_recuperacao_final=incluir_recuperacao_final
     )
-    for disc_display, frente_display in grupos:
+    for disc_display, frente_display, professor_display in grupos:
+        if professor_display:
+            meio = f"{professor_display} ({frente_display})"
+        else:
+            meio = frente_display
         for tipo in tipos_avaliacao:
-            cabecalho.append(f"{disc_display} - {frente_display} - {tipo}")
+            cabecalho.append(f"{disc_display} - {meio} - {tipo}")
     return cabecalho
 
 

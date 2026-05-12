@@ -45,15 +45,31 @@ COLUNAS_FIXAS_WIDE_NOVO = (CAN_ESTUDANTE, CAN_RA, CAN_TURMA, CAN_TRIMESTRE)
 # ---------------------------------------------------------------------------
 
 REGEX_COLUNA_DINAMICA = re.compile(
-    r"^(.+?)\s*-\s*(Frente\s+\S+)\s*-\s*(.+)$",
+    r"^(.+?)\s*-\s*(.+?)\s*-\s*(.+)$",
     re.IGNORECASE,
 )
 """
-Captura 3 grupos no nome da coluna dinâmica:
-  grupo 1: disciplina  (ex: "Matemática", "Interpretação de Texto")
-  grupo 2: frente      (ex: "Frente A", "Frente Única")
-  grupo 3: tipo avaliação (ex: "AV 1 Obj", "Simulado")
+Captura 3 grupos no nome da coluna dinâmica. Suporta dois formatos:
+
+  Formato legado:  "Matemática - Frente A - AV 1 Obj"
+  Formato novo:    "Matemática - Daniel (Frente A) - AV 1 Obj"
+
+  grupo 1: disciplina       (ex: "Matemática", "Educação Física")
+  grupo 2: frente ou "Professor (Frente X)"
+  grupo 3: tipo de avaliação (ex: "AV 1 Obj", "Simulado")
 """
+
+_REGEX_PROFESSOR_COM_FRENTE = re.compile(
+    r"^(.+?)\s*\((Frente\s+\S+)\)\s*$",
+    re.IGNORECASE,
+)
+"""Captura "Daniel (Frente A)" → grupo1="Daniel", grupo2="Frente A"."""
+
+_REGEX_FRENTE_SIMPLES = re.compile(
+    r"^(Frente\s+\S+)\s*$",
+    re.IGNORECASE,
+)
+"""Captura "Frente A" ou "Frente Única" — formato legado sem professor."""
 
 
 @dataclass(frozen=True)
@@ -61,14 +77,17 @@ class ColunaDinamica:
     """Resultado do parsing de uma coluna dinâmica."""
     coluna_original: str
     disciplina: str
-    frente: str
+    frente: str            # sempre "Frente A", "Frente B", "Frente Única", etc.
     tipo_avaliacao: str
+    professor: str | None = None  # nome do professor se embutido no cabeçalho
 
 
 def parsear_coluna_dinamica(nome_coluna: str) -> ColunaDinamica | None:
     """
-    Tenta parsear uma coluna como dinâmica no formato:
-        "{Disciplina} - {Frente X} - {Tipo Avaliação}"
+    Tenta parsear uma coluna como dinâmica. Suporta dois formatos:
+
+        Legado: "{Disciplina} - Frente {X} - {Tipo}"
+        Novo:   "{Disciplina} - {Professor} (Frente {X}) - {Tipo}"
 
     Retorna ColunaDinamica ou None se não bater no padrão.
     """
@@ -76,11 +95,31 @@ def parsear_coluna_dinamica(nome_coluna: str) -> ColunaDinamica | None:
     m = REGEX_COLUNA_DINAMICA.match(nome)
     if not m:
         return None
+
+    disciplina     = m.group(1).strip()
+    meio           = m.group(2).strip()
+    tipo_avaliacao = m.group(3).strip()
+
+    # Formato novo: "Daniel (Frente A)"
+    prof_match = _REGEX_PROFESSOR_COM_FRENTE.match(meio)
+    if prof_match:
+        professor = prof_match.group(1).strip()
+        frente    = prof_match.group(2).strip()
+    elif _REGEX_FRENTE_SIMPLES.match(meio):
+        # Formato legado: "Frente A" / "Frente Única"
+        professor = None
+        frente    = meio
+    else:
+        # Fallback conservador — trata como Frente Única
+        professor = None
+        frente    = "Frente Única"
+
     return ColunaDinamica(
         coluna_original=nome_coluna,
-        disciplina=m.group(1).strip(),
-        frente=m.group(2).strip(),
-        tipo_avaliacao=m.group(3).strip(),
+        disciplina=disciplina,
+        frente=frente,
+        tipo_avaliacao=tipo_avaliacao,
+        professor=professor,
     )
 
 
@@ -396,13 +435,23 @@ def despivotar_linha_wide(
         linha["Disciplina"] = disciplina
 
         base_key = construir_frente_professor(disciplina, frente)
-        if serie_letra is not None:
+
+        # Se o professor está embutido no cabeçalho da coluna ("Daniel (Frente A)"),
+        # usa diretamente — mais confiável que buscar_professor_para_turma.
+        # Caso contrário, cai no comportamento legado (inferência por turma).
+        professor_na_coluna = cols_dinamicas[0].professor if cols_dinamicas else None
+
+        if professor_na_coluna:
+            prof_slug = _normalizar_texto(professor_na_coluna.strip())
+            chave_professor = f"{base_key} - {prof_slug}"
+        elif serie_letra is not None:
             serie, letra = serie_letra
             chave_professor = _qualificar_chave_com_professor(
                 base_key, disciplina, serie, letra
             )
         else:
             chave_professor = base_key
+
         linha["Frente - Professor"] = chave_professor
 
         for col_din in cols_dinamicas:

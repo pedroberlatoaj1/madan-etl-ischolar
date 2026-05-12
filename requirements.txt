@@ -24,4 +24,8 @@ python-dotenv>=1.0,<2
 # Testes
 pytest>=8.0,<9
 
-# Nota: SQLite (job_store) usa sqlite3 da biblioteca padrão — sem dependência extra.
+# Banco de dados (PostgreSQL — Railway)
+psycopg2-binary>=2.9,<3
+
+# Object storage (Cloudflare R2 — S3-compatible)
+boto3>=1.35,<2

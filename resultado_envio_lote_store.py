@@ -1,49 +1,17 @@
 """
-resultado_envio_lote_store.py - Persistencia do resultado consolidado do envio por lote.
+resultado_envio_lote_store.py — Persistência do resultado consolidado (PostgreSQL).
 
-Mantem o estado agregado da fase assincrona de aprovacao/envio, permitindo:
-- consulta do resultado final sem ler toda a auditoria por item;
-- bloqueio de dupla aprovacao para o mesmo snapshot;
-- rastreabilidade entre job assíncrono, snapshot validado e auditoria.
+Mantém o estado agregado da fase assíncrona de aprovação/envio.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import sqlite3
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Optional
 
-_DEFAULT_DB = "resultados_envio_lote.db"
+from db import get_connection
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS resultados_envio_lote (
-    lote_id                TEXT    NOT NULL PRIMARY KEY,
-    job_id                 INTEGER,
-    snapshot_hash          TEXT    NOT NULL,
-    status                 TEXT    NOT NULL,
-    aprovado_por           TEXT,
-    aprovador_nome_informado TEXT,
-    aprovador_email        TEXT,
-    aprovador_origem       TEXT,
-    aprovador_identity_strength TEXT,
-    sucesso                INTEGER NOT NULL,
-    quantidade_enviada     INTEGER NOT NULL,
-    quantidade_com_erro    INTEGER NOT NULL,
-    total_sendaveis        INTEGER NOT NULL,
-    total_dry_run          INTEGER NOT NULL,
-    total_erros_resolucao  INTEGER NOT NULL,
-    total_erros_envio      INTEGER NOT NULL,
-    mensagem               TEXT,
-    resumo                 TEXT    NOT NULL,
-    auditoria_resumo       TEXT    NOT NULL,
-    finished_at            TEXT,
-    created_at             TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    updated_at             TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-);
-"""
 
 _UPSERT = """
 INSERT INTO resultados_envio_lote (
@@ -54,39 +22,39 @@ INSERT INTO resultados_envio_lote (
     total_erros_resolucao, total_erros_envio, mensagem,
     resumo, auditoria_resumo, finished_at, created_at, updated_at
 ) VALUES (
-    :lote_id, :job_id, :snapshot_hash, :status, :aprovado_por,
-    :aprovador_nome_informado, :aprovador_email, :aprovador_origem,
-    :aprovador_identity_strength, :sucesso,
-    :quantidade_enviada, :quantidade_com_erro, :total_sendaveis, :total_dry_run,
-    :total_erros_resolucao, :total_erros_envio, :mensagem,
-    :resumo, :auditoria_resumo, :finished_at,
+    %(lote_id)s, %(job_id)s, %(snapshot_hash)s, %(status)s, %(aprovado_por)s,
+    %(aprovador_nome_informado)s, %(aprovador_email)s, %(aprovador_origem)s,
+    %(aprovador_identity_strength)s, %(sucesso)s,
+    %(quantidade_enviada)s, %(quantidade_com_erro)s, %(total_sendaveis)s, %(total_dry_run)s,
+    %(total_erros_resolucao)s, %(total_erros_envio)s, %(mensagem)s,
+    %(resumo)s, %(auditoria_resumo)s, %(finished_at)s,
     COALESCE(
-        (SELECT created_at FROM resultados_envio_lote WHERE lote_id = :lote_id),
-        strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        (SELECT created_at FROM resultados_envio_lote WHERE lote_id = %(lote_id)s),
+        to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
     ),
-    strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
 )
-ON CONFLICT(lote_id) DO UPDATE SET
-    job_id                = excluded.job_id,
-    snapshot_hash         = excluded.snapshot_hash,
-    status                = excluded.status,
-    aprovado_por          = excluded.aprovado_por,
-    aprovador_nome_informado = excluded.aprovador_nome_informado,
-    aprovador_email       = excluded.aprovador_email,
-    aprovador_origem      = excluded.aprovador_origem,
-    aprovador_identity_strength = excluded.aprovador_identity_strength,
-    sucesso               = excluded.sucesso,
-    quantidade_enviada    = excluded.quantidade_enviada,
-    quantidade_com_erro   = excluded.quantidade_com_erro,
-    total_sendaveis       = excluded.total_sendaveis,
-    total_dry_run         = excluded.total_dry_run,
-    total_erros_resolucao = excluded.total_erros_resolucao,
-    total_erros_envio     = excluded.total_erros_envio,
-    mensagem              = excluded.mensagem,
-    resumo                = excluded.resumo,
-    auditoria_resumo      = excluded.auditoria_resumo,
-    finished_at           = excluded.finished_at,
-    updated_at            = excluded.updated_at;
+ON CONFLICT (lote_id) DO UPDATE SET
+    job_id                      = EXCLUDED.job_id,
+    snapshot_hash               = EXCLUDED.snapshot_hash,
+    status                      = EXCLUDED.status,
+    aprovado_por                = EXCLUDED.aprovado_por,
+    aprovador_nome_informado    = EXCLUDED.aprovador_nome_informado,
+    aprovador_email             = EXCLUDED.aprovador_email,
+    aprovador_origem            = EXCLUDED.aprovador_origem,
+    aprovador_identity_strength = EXCLUDED.aprovador_identity_strength,
+    sucesso                     = EXCLUDED.sucesso,
+    quantidade_enviada          = EXCLUDED.quantidade_enviada,
+    quantidade_com_erro         = EXCLUDED.quantidade_com_erro,
+    total_sendaveis             = EXCLUDED.total_sendaveis,
+    total_dry_run               = EXCLUDED.total_dry_run,
+    total_erros_resolucao       = EXCLUDED.total_erros_resolucao,
+    total_erros_envio           = EXCLUDED.total_erros_envio,
+    mensagem                    = EXCLUDED.mensagem,
+    resumo                      = EXCLUDED.resumo,
+    auditoria_resumo            = EXCLUDED.auditoria_resumo,
+    finished_at                 = EXCLUDED.finished_at,
+    updated_at                  = EXCLUDED.updated_at;
 """
 
 _SELECT = """
@@ -98,32 +66,14 @@ SELECT
     total_erros_resolucao, total_erros_envio, mensagem,
     resumo, auditoria_resumo, finished_at, created_at, updated_at
 FROM resultados_envio_lote
-WHERE lote_id = ?;
+WHERE lote_id = %s;
 """
 
-_LIST = "SELECT lote_id FROM resultados_envio_lote ORDER BY updated_at DESC LIMIT ?;"
-
-
-def _db_path_from_env() -> str:
-    return os.environ.get("RESULTADO_ENVIO_LOTE_DB", _DEFAULT_DB)
+_LIST = "SELECT lote_id FROM resultados_envio_lote ORDER BY updated_at DESC LIMIT %s;"
 
 
 def _json_dumps(obj: Any) -> str:
     return json.dumps(obj, sort_keys=True, ensure_ascii=False, default=str)
-
-
-def _ensure_columns(conn: sqlite3.Connection) -> None:
-    cur = conn.execute("PRAGMA table_info(resultados_envio_lote)")
-    colunas = {row["name"] for row in cur.fetchall()}
-    novas_colunas = {
-        "aprovador_nome_informado": "TEXT",
-        "aprovador_email": "TEXT",
-        "aprovador_origem": "TEXT",
-        "aprovador_identity_strength": "TEXT",
-    }
-    for nome, ddl in novas_colunas.items():
-        if nome not in colunas:
-            conn.execute(f"ALTER TABLE resultados_envio_lote ADD COLUMN {nome} {ddl}")
 
 
 @dataclass
@@ -153,38 +103,10 @@ class ResultadoEnvioPersistido:
 
 
 class ResultadoEnvioLoteStore:
-    """Persistencia SQLite do resultado agregado de envio."""
+    """Persistência PostgreSQL do resultado agregado de envio."""
 
-    def __init__(self, db_path: str | Path | None = None) -> None:
-        self._db_path = str(db_path) if db_path is not None else _db_path_from_env()
-        self._shared_conn: Optional[sqlite3.Connection] = None
-
-        if self._db_path == ":memory:":
-            self._shared_conn = self._open_connection()
-            self._init_db(self._shared_conn)
-        else:
-            self._init_db()
-
-    def _open_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=5.0)
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _connect(self) -> sqlite3.Connection:
-        if self._shared_conn is not None:
-            return self._shared_conn
-        return self._open_connection()
-
-    def _init_db(self, conn: Optional[sqlite3.Connection] = None) -> None:
-        if conn is not None:
-            conn.executescript(_DDL)
-            _ensure_columns(conn)
-        else:
-            with self._open_connection() as tmp:
-                tmp.executescript(_DDL)
-                _ensure_columns(tmp)
+    def __init__(self, db_path: Any = None) -> None:
+        pass
 
     def salvar(self, resultado: ResultadoEnvioPersistido) -> ResultadoEnvioPersistido:
         params = {
@@ -209,18 +131,21 @@ class ResultadoEnvioLoteStore:
             "auditoria_resumo": _json_dumps(resultado.auditoria_resumo),
             "finished_at": resultado.finished_at,
         }
-        with self._connect() as conn:
-            conn.execute(_UPSERT, params)
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_UPSERT, params)
         salvo = self.carregar(resultado.lote_id)
         if salvo is None:
             raise RuntimeError(
-                f"Falha ao recarregar resultado de envio persistido do lote '{resultado.lote_id}'."
+                f"Falha ao recarregar resultado de envio do lote '{resultado.lote_id}'."
             )
         return salvo
 
     def carregar(self, lote_id: str) -> Optional[ResultadoEnvioPersistido]:
-        with self._connect() as conn:
-            row = conn.execute(_SELECT, (lote_id,)).fetchone()
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_SELECT, (lote_id,))
+                row = cur.fetchone()
         if row is None:
             return None
         return ResultadoEnvioPersistido(
@@ -249,8 +174,10 @@ class ResultadoEnvioLoteStore:
         )
 
     def listar_ids(self, limit: int = 1000) -> list[str]:
-        with self._connect() as conn:
-            rows = conn.execute(_LIST, (limit,)).fetchall()
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_LIST, (limit,))
+                rows = cur.fetchall()
         return [r["lote_id"] for r in rows]
 
 

@@ -1,42 +1,20 @@
 """
-validacao_lote_store.py - Persistencia do resultado de validacao pendente de aprovacao.
+validacao_lote_store.py — Persistência do resultado de validação (PostgreSQL).
 
-Guarda o snapshot oficial validado antes da aprovacao humana, permitindo:
-- aprovacao assincrona sem rerodar a validacao;
-- deteccao de snapshot stale por hash;
-- reaproveitamento do pipeline oficial pelo worker e pelo CLI.
+Guarda o snapshot oficial validado antes da aprovação humana, permitindo:
+- aprovação assíncrona sem rerodar a validação
+- detecção de snapshot stale por hash
+- reaproveitamento do pipeline oficial pelo worker e pelo CLI
 """
 
 from __future__ import annotations
 
 import json
-import os
-import sqlite3
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Optional
 
-_DEFAULT_DB = "validacoes_lote.db"
+from db import get_connection
 
-_DDL = """
-CREATE TABLE IF NOT EXISTS validacoes_lote (
-    lote_id               TEXT    NOT NULL PRIMARY KEY,
-    job_id                INTEGER,
-    snapshot_hash         TEXT    NOT NULL,
-    status                TEXT    NOT NULL,
-    resumo                TEXT    NOT NULL,
-    avisos                TEXT    NOT NULL,
-    erros                 TEXT    NOT NULL,
-    pendencias            TEXT    NOT NULL DEFAULT '[]',
-    apto_para_aprovacao   INTEGER NOT NULL,
-    resultados_validacao  TEXT    NOT NULL,
-    itens_sendaveis       TEXT    NOT NULL,
-    versao                INTEGER NOT NULL DEFAULT 1,
-    expires_at            TEXT,
-    created_at            TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
-    updated_at            TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-);
-"""
 
 _UPSERT = """
 INSERT INTO validacoes_lote (
@@ -45,30 +23,30 @@ INSERT INTO validacoes_lote (
     apto_para_aprovacao, resultados_validacao, itens_sendaveis,
     versao, expires_at, created_at, updated_at
 ) VALUES (
-    :lote_id, :job_id, :snapshot_hash, :status,
-    :resumo, :avisos, :erros, :pendencias,
-    :apto_para_aprovacao, :resultados_validacao, :itens_sendaveis,
-    :versao, :expires_at,
+    %(lote_id)s, %(job_id)s, %(snapshot_hash)s, %(status)s,
+    %(resumo)s, %(avisos)s, %(erros)s, %(pendencias)s,
+    %(apto_para_aprovacao)s, %(resultados_validacao)s, %(itens_sendaveis)s,
+    %(versao)s, %(expires_at)s,
     COALESCE(
-        (SELECT created_at FROM validacoes_lote WHERE lote_id = :lote_id),
-        strftime('%Y-%m-%dT%H:%M:%SZ','now')
+        (SELECT created_at FROM validacoes_lote WHERE lote_id = %(lote_id)s),
+        to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
     ),
-    strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')
 )
-ON CONFLICT(lote_id) DO UPDATE SET
-    job_id               = excluded.job_id,
-    snapshot_hash        = excluded.snapshot_hash,
-    status               = excluded.status,
-    resumo               = excluded.resumo,
-    avisos               = excluded.avisos,
-    erros                = excluded.erros,
-    pendencias           = excluded.pendencias,
-    apto_para_aprovacao  = excluded.apto_para_aprovacao,
-    resultados_validacao = excluded.resultados_validacao,
-    itens_sendaveis      = excluded.itens_sendaveis,
-    versao               = excluded.versao,
-    expires_at           = excluded.expires_at,
-    updated_at           = excluded.updated_at;
+ON CONFLICT (lote_id) DO UPDATE SET
+    job_id               = EXCLUDED.job_id,
+    snapshot_hash        = EXCLUDED.snapshot_hash,
+    status               = EXCLUDED.status,
+    resumo               = EXCLUDED.resumo,
+    avisos               = EXCLUDED.avisos,
+    erros                = EXCLUDED.erros,
+    pendencias           = EXCLUDED.pendencias,
+    apto_para_aprovacao  = EXCLUDED.apto_para_aprovacao,
+    resultados_validacao = EXCLUDED.resultados_validacao,
+    itens_sendaveis      = EXCLUDED.itens_sendaveis,
+    versao               = EXCLUDED.versao,
+    expires_at           = EXCLUDED.expires_at,
+    updated_at           = EXCLUDED.updated_at;
 """
 
 _SELECT = """
@@ -78,14 +56,10 @@ SELECT
     apto_para_aprovacao, resultados_validacao, itens_sendaveis,
     versao, expires_at, created_at, updated_at
 FROM validacoes_lote
-WHERE lote_id = ?;
+WHERE lote_id = %s;
 """
 
-_LIST = "SELECT lote_id FROM validacoes_lote ORDER BY updated_at DESC LIMIT ?;"
-
-
-def _db_path_from_env() -> str:
-    return os.environ.get("VALIDACAO_LOTE_DB", _DEFAULT_DB)
+_LIST = "SELECT lote_id FROM validacoes_lote ORDER BY updated_at DESC LIMIT %s;"
 
 
 def _json_dumps(obj: Any) -> str:
@@ -112,41 +86,11 @@ class ResultadoValidacaoPersistido:
 
 
 class ValidacaoLoteStore:
-    """
-    Persistencia SQLite do resultado oficial de validacao por lote.
+    """Persistência PostgreSQL do resultado oficial de validação por lote."""
 
-    Segue o mesmo padrao dos demais stores do projeto, incluindo suporte
-    a ':memory:' com conexao compartilhada para testes.
-    """
-
-    def __init__(self, db_path: str | Path | None = None) -> None:
-        self._db_path = str(db_path) if db_path is not None else _db_path_from_env()
-        self._shared_conn: Optional[sqlite3.Connection] = None
-
-        if self._db_path == ":memory:":
-            self._shared_conn = self._open_connection()
-            self._init_db(self._shared_conn)
-        else:
-            self._init_db()
-
-    def _open_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path, timeout=5.0)
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _connect(self) -> sqlite3.Connection:
-        if self._shared_conn is not None:
-            return self._shared_conn
-        return self._open_connection()
-
-    def _init_db(self, conn: Optional[sqlite3.Connection] = None) -> None:
-        if conn is not None:
-            conn.executescript(_DDL)
-        else:
-            with self._open_connection() as tmp:
-                tmp.executescript(_DDL)
+    def __init__(self, db_path: Any = None) -> None:
+        # db_path mantido por compatibilidade; ignorado em PostgreSQL.
+        pass
 
     def salvar(self, resultado: ResultadoValidacaoPersistido) -> ResultadoValidacaoPersistido:
         params = {
@@ -164,16 +108,19 @@ class ValidacaoLoteStore:
             "versao": int(resultado.versao),
             "expires_at": resultado.expires_at,
         }
-        with self._connect() as conn:
-            conn.execute(_UPSERT, params)
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_UPSERT, params)
         salvo = self.carregar(resultado.lote_id)
         if salvo is None:
-            raise RuntimeError(f"Falha ao recarregar validacao persistida do lote '{resultado.lote_id}'.")
+            raise RuntimeError(f"Falha ao recarregar validacao do lote '{resultado.lote_id}'.")
         return salvo
 
     def carregar(self, lote_id: str) -> Optional[ResultadoValidacaoPersistido]:
-        with self._connect() as conn:
-            row = conn.execute(_SELECT, (lote_id,)).fetchone()
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_SELECT, (lote_id,))
+                row = cur.fetchone()
         if row is None:
             return None
         return ResultadoValidacaoPersistido(
@@ -195,8 +142,10 @@ class ValidacaoLoteStore:
         )
 
     def listar_ids(self, limit: int = 1000) -> list[str]:
-        with self._connect() as conn:
-            rows = conn.execute(_LIST, (limit,)).fetchall()
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(_LIST, (limit,))
+                rows = cur.fetchall()
         return [r["lote_id"] for r in rows]
 
 

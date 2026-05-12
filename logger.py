@@ -1,18 +1,18 @@
 """
-logger.py — Configuração centralizada de logging com saída no terminal e em arquivo.
+logger.py — Configuração centralizada de logging.
+
+Output exclusivamente em stdout (capturado automaticamente pelo Railway).
+FileHandler removido: filesystem do Railway é efêmero, logs em arquivo seriam perdidos.
 """
 
 import logging
 import sys
-from logging.handlers import RotatingFileHandler
 from config import config
 
 
 def configurar_logger(nome: str = "etl_ischolar") -> logging.Logger:
     """
-    Retorna um logger configurado com:
-      - StreamHandler → terminal (colorido com nível)
-      - RotatingFileHandler → arquivo etl_ischolar.log (máx 5MB, 3 backups)
+    Retorna um logger configurado com StreamHandler → stdout.
     """
     logger = logging.getLogger(nome)
 
@@ -28,21 +28,9 @@ def configurar_logger(nome: str = "etl_ischolar") -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # --- Terminal ---
     sh = logging.StreamHandler(sys.stdout)
     sh.setFormatter(fmt)
     sh.setLevel(nivel)
     logger.addHandler(sh)
-
-    # --- Arquivo rotacionado ---
-    fh = RotatingFileHandler(
-        filename=config.LOG_FILE,
-        maxBytes=5 * 1024 * 1024,  # 5 MB
-        backupCount=3,
-        encoding="utf-8",
-    )
-    fh.setFormatter(fmt)
-    fh.setLevel(nivel)
-    logger.addHandler(fh)
 
     return logger

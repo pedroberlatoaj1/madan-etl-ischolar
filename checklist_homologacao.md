@@ -259,14 +259,18 @@ Qualquer um dos itens abaixo estiver presente:
 > `Frente - Professor` nao sao mais necessarios no fluxo Plano B. Os itens abaixo refletem
 > o estado atual.
 
-- [ ] Confirmar nomes das turmas do iScholar para o 2o ano (`2A`, `2B` ou variante oficial) **BLOQUEANTE**
-- [ ] Obter RA real de 1-2 alunos de `2A` e `2B` para dry-run tecnico **BLOQUEANTE**
-- [ ] Validar `buscar_aluno` + `listar_matriculas` para alunos reais do 2o ano **BLOQUEANTE**
-- [x] ~~Rodar piloto com aliases explicitos em `Frente - Professor`~~ — **automatizado via Plano B**: o adaptador qualifica a chave com o professor correto ao detectar a turma no nome da aba
-- [ ] Dry-run com aba `2A_T1` do workbook anual — confirmar resolucao automatica de professor **BLOQUEANTE**
-- [ ] Confirmar no diario do iScholar um envio pequeno do 2o ano via aba `2A_T1` (Sheets) **BLOQUEANTE**
-- [ ] Validar a geracao automatica de planilhas 2A/2B com o registro do PDF 2026 ja reconciliado
-- [ ] Confirmar no iScholar os casos ainda sensiveis: Redacao, Literatura e Interpretacao de Texto no 2o ano
+- [x] Confirmar nomes das turmas do iScholar para o 2o ano — confirmado: `2A` e `2B` ✅
+- [x] Obter RA real de 1-2 alunos de `2A` e `2B` — roster completo com 45+45 alunos reais ✅
+- [x] Validar `pega_alunos` para alunos reais do 2o ano — 45 RAs resolvidos em producao ✅
+- [x] ~~Rodar piloto com aliases explicitos em `Frente - Professor`~~ — **automatizado via Apps Script direto**
+- [x] Dry-run com aba `2A_T2` do workbook anual — 21 sendaveis, 0 erros ✅
+- [x] Confirmar no diario do iScholar envio completo da 2A — 21/21 + 45/45 (Arte volume) ✅
+- [x] Validar geracao automatica de planilhas 2A/2B — `DISCIPLINAS_OFICIAIS_2026` validada em producao ✅
+- [x] Confirmar Redacao, Literatura, Gramatica no 2o ano — todos enviados com sucesso em producao ✅
+
+> **Atualizacao 2026-04-23:** 2A totalmente validada em producao. Ver Execucao 008-E para detalhes.
+> Band-aids aplicados no `mapa_professores.json` para os 3 erros de professor detectados (Daniel/Mat B, Leo/Qui B, Cavaco/Fis B).
+> Correcoes semanticas em `professores_madan.py` ficam como melhoria pos-entrega (nao bloqueiam operacao).
 
 Resolucao automatica por turma ja implementada e testada unitariamente:
 
@@ -457,6 +461,103 @@ Resolucao automatica por turma ja implementada e testada unitariamente:
 | Risco de regressão | Zero — novas chaves adicionais, nenhuma removida, mesmo ID 148 já mapeado |
 | Próximo passo | Reenviar 2B_T2 Ed Física com o mapa corrigido para confirmar resolução |
 | Observações | Execução confirma que a estrutura de 193 colunas do Plano B está operacional. Desambiguação por professor funciona corretamente para multi-frente (GEO Frente B → Moreto). Falha de Ed Física é alias ausente no mapa — incidente do pipeline, não do iScholar. |
+
+---
+
+---
+
+### Execução 008 — Validação Completa Multi-Turma via Apps Script (2026-04-21 a 2026-04-23)
+
+> **Marco:** primeira validação end-to-end de todas as 4 turmas com cobertura total de disciplinas × frentes via arquitetura Apps Script → iScholar direta.
+
+#### 008-A — Dry Run externo (2026-04-21)
+
+| Campo | Valor |
+|-------|-------|
+| Data | 2026-04-21 |
+| Ambiente | producao (iScholar real) |
+| Lote | `1xFvfxtgxc7KsM5o.../1A_T2` |
+| Snapshot | `be8b1e8af86bedb311721fd78985410faf8ffc14a0425347b7a4333fc868a382` |
+| Turma | 1A_T2 |
+| Sendaveis | 5 |
+| Modo | dry_run via Apps Script |
+| Resultado | ✅ 5/5 simulados, 0 erros — `pega_alunos` resolveu todos os RAs via Apps Script → iScholar |
+| Aprovador | pedro |
+| Observacoes | Primeira validacao do caminho Apps Script → iScholar em dry run. Confirma que o bloqueio Cloudflare da VPS foi contornado com sucesso. |
+
+#### 008-B — Cobertura completa 1A (2026-04-21/22)
+
+| Campo | Valor |
+|-------|-------|
+| Lote | `1z-t4seD6kY.../1A_T2` |
+| Turma | 1A_T2 |
+| Disciplinas testadas | Todas — Mat A/B/C, Bio A/B, Fis A/B, Qui A/B, Hist A/B, Geo A/B, Arte, Lit, Soc, Gram, Red, Ed Fis, Ingles, Fil |
+| Sendaveis — matriz | 21/21 enviados ✅ |
+| Sendaveis — volume | 44/44 (Arte para todos os alunos da 1A) ✅ |
+| Erros de resolucao | 0 |
+| Erros de envio | 0 |
+| Verificacao iScholar | ✅ todas as 14 disciplinas × frentes confirmadas no diario |
+| Observacoes | Primeiro teste com cobertura total de disciplinas. Validou `mapa_disciplinas`, `mapa_avaliacoes` e `mapa_professores` para toda a serie 1A. |
+
+#### 008-C — Cobertura completa 1B (2026-04-22)
+
+| Campo | Valor |
+|-------|-------|
+| Lote | `1z-t4seD6kY.../1B_T2` |
+| Snapshot | `fbabcfaa20ea6a889cdb83f2a825aac696612e69d1d442833d26515cd9a53d80` |
+| Turma | 1B_T2 |
+| Sendaveis — matriz | 21/21 enviados ✅ |
+| Sendaveis — volume | 41/41 (Arte + Ponto Extra para todos os alunos da 1B) ✅ |
+| Erros de resolucao | 0 |
+| Erros de envio | 0 |
+| Verificacao iScholar | ✅ confirmado por amostragem — 3 alunos em 3 disciplinas distintas |
+| Observacoes | Confirmou volume em segunda turma. Tambem validou o tipo de avaliacao Ponto Extra pela primeira vez. |
+
+#### 008-D — Cobertura completa 2B (2026-04-22/23)
+
+| Campo | Valor |
+|-------|-------|
+| Lote | `1z-t4seD6kY.../2B_T2` |
+| Turma | 2B_T2 |
+| Sendaveis — 1a tentativa | 20/21 (1 erro_resolucao) |
+| Bug detectado | `matematica c - luan` nao encontrado em `mapa_professores` — sistema recusou corretamente o lancamento |
+| Causa | `professores_madan.py` aponta Luan para Mat C 2B; correto e Felipe de Castro (id 57) |
+| Correcao | Band-aid: alias `matematica c - luan → 57` adicionado em 2A e 2B |
+| Sendaveis — apos correcao | 21/21 enviados ✅ |
+| Sendaveis — volume | 45/45 (Arte para todos os alunos da 2B) ✅ |
+| Verificacao iScholar | ✅ confirmado |
+| Observacoes | **Feature de seguranca demonstrada em producao:** sistema detectou e bloqueou nota com professor sem mapeamento, sem bloquear os outros 20 lancamentos validos. |
+
+#### 008-E — Cobertura completa 2A (2026-04-23)
+
+| Campo | Valor |
+|-------|-------|
+| Lote | `1z-t4seD6kY.../2A_T2` |
+| Snapshot | `881371300a089a582c83da55af950c3a7f9c48f629206b6e17778032ea8686db` |
+| Turma | 2A_T2 |
+| Sendaveis — 1a tentativa | 18/21 (3 erros_resolucao) |
+| Bugs detectados | `matematica b - daniel → 71` (Daniel errado; certo: Luan), `quimica b - leo → 70` (Leo errado; certo: Marcus Vinicius), `fisica b - cavaco → 108` (Cavaco errado; certo: Pezzin) |
+| Correcao | Band-aids adicionados nos 3 aliases para 2A |
+| Sendaveis — apos correcao | 3/3 revalidados e enviados ✅ (total: 21/21) |
+| Sendaveis — volume | 45/45 (Arte para todos os alunos da 2A) ✅ |
+| Verificacao iScholar | ✅ confirmado — todos os ids corretos |
+| Idempotencia | ✅ validacao pos-correcao mostrou exatamente 3 sendaveis (os 18 ja enviados foram ignorados) |
+| Observacoes | Fechou a validacao de todas as 4 turmas. IDs de todos os alunos da 2A resolvidos corretamente via `pega_alunos`. |
+
+#### Resumo consolidado — Execucao 008
+
+| Turma | Matriz (21 comb.) | Volume (Arte) | Status |
+|-------|-------------------|----------------|--------|
+| 1A | 21/21 ✅ | 44/44 ✅ | Aprovado |
+| 1B | 21/21 ✅ | 41/41 ✅ | Aprovado |
+| 2B | 21/21 ✅ (apos band-aid) | 45/45 ✅ | Aprovado |
+| 2A | 21/21 ✅ (apos 3 band-aids) | 45/45 ✅ | Aprovado |
+| **Total** | **84/84** | **175/175** | **✅ Sistema aprovado** |
+
+- **~260 notas reais** enviadas ao iScholar em 3 dias de testes
+- **0 erros nao tratados** — todos os erros detectados, diagnosticados e corrigidos
+- **4 bugs de cadastro de professor** descobertos pelo proprio sistema e corrigidos via band-aid
+- **Backup automatico** operacional com 6 copias no Google Drive
 
 ---
 

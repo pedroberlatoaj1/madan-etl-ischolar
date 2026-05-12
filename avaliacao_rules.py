@@ -194,16 +194,21 @@ def calcular_nota_ponderada(nota_0_10: Any, peso: Any, *, arredondar: int | None
 
 def calcular_av3_nivelamento(av3_listas: Any, av3_avaliacao: Any, *, arredondar: int | None = 2) -> float:
     """
-    ✅ CONFIRMADO pelo PDF "Sistema Avaliativo.pdf":
-    Av3 (nivelamento) = 7,0 pontos de listas + 3,0 pontos de avaliação.
-    Notas digitadas seguem 0..10, então:
-      Av3 = (listas/10)*7 + (avaliacao/10)*3
+    Av3 (nivelamento) = soma direta de listas + avaliacao.
+
+    Escalas de entrada (confirmado com Pedro Berlato em 2026-05-01):
+      - listas:    0 a 7  (pontos brutos, não normalizado)
+      - avaliacao: 0 a 3  (pontos brutos, não normalizado)
+      - AV3 resultante: 0 a 10 (soma direta, enviada ao iScholar)
+
+    Fórmula:
+      AV3 = listas + avaliacao
 
     Apenas alunos com nivelamento possuem AV3.
     """
     listas = validar_nota_0_10(av3_listas, allow_blank=False)
     avaliacao = validar_nota_0_10(av3_avaliacao, allow_blank=False)
-    v = (listas / 10.0) * 7.0 + (avaliacao / 10.0) * 3.0
+    v = listas + avaliacao
     return round(v, arredondar) if arredondar is not None else v
 
 

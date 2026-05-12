@@ -518,14 +518,30 @@ def linha_madan_para_lancamentos(
                 )
             )
     elif listas_present ^ aval_present:
-        lancamentos.append(
-            base_lancamento(
-                componente=AV3,
-                status=StatusLancamento.INCOMPLETO,
-                motivo_status=MotivoStatus.AV3_INCOMPLETA,
-                observacoes={"listas": raw_listas, "avaliacao": raw_aval},
+        # Envia o subcomponente presente como av3 parcial (sendavel isolado).
+        # Nao exige peso_av3 — envio parcial nao depende de nivelamento ativo.
+        raw_partial = raw_listas if listas_present else raw_aval
+        sub_presente = "listas" if listas_present else "avaliacao"
+        try:
+            n = validar_nota_0_10(raw_partial, allow_blank=False)
+            lancamentos.append(
+                base_lancamento(
+                    componente=AV3,
+                    nota_original={sub_presente: raw_partial},
+                    nota_ajustada_0a10=n,
+                    status=StatusLancamento.PRONTO,
+                    motivo_status=MotivoStatus.OK,
+                )
             )
-        )
+        except Exception as e:
+            lancamentos.append(
+                base_lancamento(
+                    componente=AV3,
+                    nota_original={sub_presente: raw_partial},
+                    status=StatusLancamento.ERRO_VALIDACAO,
+                    motivo_status=str(e),
+                )
+            )
 
     # ✅ Ponto extra CONFIRMADO pelo PDF: aplica na coluna AV1, teto 10.
     # ⚠️ Pendente: definição exata de "avaliação fechada" (reunião).

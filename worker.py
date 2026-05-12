@@ -920,6 +920,10 @@ def _parsear_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    # Inicializa o schema do PostgreSQL (idempotente)
+    from db import init_schema
+    init_schema()
+
     args = _parsear_args()
 
     if args.once:

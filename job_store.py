@@ -1,40 +1,31 @@
 """
-job_store.py — Camada de persistência de jobs de sincronização (SQLite).
+job_store.py — Camada de persistência de jobs de sincronização (PostgreSQL).
 
 Responsável por:
-- inicializar banco SQLite
-- criar tabela de jobs (se não existir)
 - inserir job
 - buscar jobs pendentes
 - atualizar status e contadores
 - registrar erro
 - marcar job como skipped
 - verificar se um hash já foi processado com sucesso
+- reivindicar atomicamente o próximo job (FOR UPDATE SKIP LOCKED)
 """
 
 from __future__ import annotations
 
 import json
-import sqlite3
-import threading
-import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Iterable, List, Optional, TypeVar
+from typing import Any, Iterable, List, Optional
 
 from config import config
 from constants import ErrorType, JobStatus, JobType
+from db import get_connection
 from logger import configurar_logger
 from alertas import alertar_falha_definitiva
 
 
 log = configurar_logger("etl.job_store")
-
-_INIT_LOCK = threading.Lock()
-_INITIALIZED = False
-
-
-T = TypeVar("T")
 
 
 class JobStoreError(Exception):
@@ -52,25 +43,16 @@ class Job:
     updated_at: str
     error_message: Optional[str] = None
     skip_reason: Optional[str] = None
-    # Resumo do resultado de execução (ex.: "Criadas: X | Puladas: Y | ...")
-    # Útil para lotes idempotentes que concluem deterministicamente com ressalvas.
     result_summary: Optional[str] = None
     total_records: Optional[int] = None
     processed_records: Optional[int] = None
-    # retry_count: usado EXCLUSIVAMENTE por stale recovery para contar
-    # quantas vezes um job foi devolvido de 'processing' para 'pending'
-    # após timeout (worker morto). Não interfere no retry automático.
     retry_count: int = 0
-    # attempt_count/max_attempts: usados EXCLUSIVAMENTE pelo retry automático
-    # de processamento/envio (worker.py). Cada vez que um job é reivindicado
-    # com sucesso via claim_next_pending_job, attempt_count é incrementado
-    # e o backoff progressivo é calculado com base nele.
     attempt_count: int = 0
     max_attempts: int = 4
-    error_type: Optional[str] = None  # "transient" | "permanent" | "exhausted" | None
+    error_type: Optional[str] = None
     last_error: Optional[str] = None
-    next_retry_at: Optional[str] = None  # ISO UTC (string). Se > agora, não é elegível.
-    last_attempt_at: Optional[str] = None  # ISO UTC do início da tentativa atual
+    next_retry_at: Optional[str] = None
+    last_attempt_at: Optional[str] = None
     job_type: str = JobType.LEGACY_SYNC
     payload: Optional[dict[str, Any]] = None
 
@@ -80,84 +62,9 @@ def _agora_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
-def _conectar() -> sqlite3.Connection:
-    """
-    Abre uma conexão com o banco de jobs com configurações robustas para concorrência.
-
-    - timeout: aguarda alguns segundos antes de falhar em disputas curtas de lock.
-    - journal_mode=WAL: melhor convivência entre leitura/escrita (worker + webhook).
-    - synchronous=NORMAL: equilíbrio entre durabilidade e desempenho.
-    """
-    try:
-        conn = sqlite3.connect(
-            getattr(config, "JOB_DB_PATH", "jobs.sqlite3"),
-            timeout=5.0,
-            isolation_level=None,  # autocommit com BEGIN explícito
-        )
-        conn.row_factory = sqlite3.Row
-        cur = conn.cursor()
-        cur.execute("PRAGMA journal_mode=WAL;")
-        cur.execute("PRAGMA synchronous=NORMAL;")
-        cur.close()
-        return conn
-    except sqlite3.Error as exc:
-        log.exception("❌ Falha ao conectar ao banco de jobs: %s", exc)
-        raise JobStoreError("Falha ao conectar ao banco de jobs") from exc
-
-
-def _with_lock_retry(
-    operation: Callable[[sqlite3.Connection], T],
-    *,
-    op_name: str,
-    max_tries: int = 3,
-    initial_backoff: float = 0.1,
-) -> T:
-    """
-    Executa uma operação de banco com retry curto em caso de `database is locked`.
-
-    Política:
-      - Até max_tries tentativas (1 inicial + 2 retries, por padrão).
-      - Backoff exponencial simples entre tentativas (100ms, ~250ms, ~625ms).
-      - Apenas erros contendo "database is locked" entram em retry.
-      - Outros erros são propagados como JobStoreError sem retry extra.
-    """
-    init_db()
-    conn = _conectar()
-    try:
-        backoff = initial_backoff
-        for tentativa in range(max_tries):
-            try:
-                return operation(conn)
-            except sqlite3.OperationalError as exc:
-                is_locked = "database is locked" in str(exc).lower()
-                if is_locked and tentativa < max_tries - 1:
-                    log.debug(
-                        "Database locked em %s; retry em %.3fs (tentativa %d/%d).",
-                        op_name,
-                        backoff,
-                        tentativa + 1,
-                        max_tries,
-                    )
-                    try:
-                        conn.execute("ROLLBACK")
-                    except Exception:
-                        pass
-                    time.sleep(backoff)
-                    backoff *= 2.5
-                    continue
-
-                try:
-                    conn.execute("ROLLBACK")
-                except Exception:
-                    pass
-                log.exception("❌ Erro em operação SQLite (%s): %s", op_name, exc)
-                raise JobStoreError(f"Erro em operação SQLite ({op_name})") from exc
-    finally:
-        conn.close()
-
-
-def _row_to_job(row: sqlite3.Row) -> Job:
-    """Converte uma sqlite3.Row no dataclass Job."""
+def _row_to_job(row: dict) -> Job:
+    """Converte uma linha (dict do RealDictCursor) no dataclass Job."""
+    payload_json = row.get("payload_json")
     return Job(
         id=row["id"],
         source_type=row["source_type"],
@@ -166,197 +73,26 @@ def _row_to_job(row: sqlite3.Row) -> Job:
         status=row["status"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
-        error_message=row["error_message"],
-        skip_reason=row["skip_reason"],
-        result_summary=row["result_summary"] if "result_summary" in row.keys() else None,
-        total_records=row["total_records"],
-        processed_records=row["processed_records"],
-        retry_count=row["retry_count"],
-        attempt_count=row["attempt_count"] if "attempt_count" in row.keys() else 0,
-        max_attempts=row["max_attempts"] if "max_attempts" in row.keys() else 4,
-        error_type=row["error_type"] if "error_type" in row.keys() else None,
-        last_error=row["last_error"] if "last_error" in row.keys() else None,
-        next_retry_at=row["next_retry_at"] if "next_retry_at" in row.keys() else None,
-        last_attempt_at=row["last_attempt_at"] if "last_attempt_at" in row.keys() else None,
-        job_type=row["job_type"] if "job_type" in row.keys() else JobType.LEGACY_SYNC,
-        payload=json.loads(row["payload_json"]) if ("payload_json" in row.keys() and row["payload_json"]) else None,
+        error_message=row.get("error_message"),
+        skip_reason=row.get("skip_reason"),
+        result_summary=row.get("result_summary"),
+        total_records=row.get("total_records"),
+        processed_records=row.get("processed_records"),
+        retry_count=row.get("retry_count", 0),
+        attempt_count=row.get("attempt_count", 0),
+        max_attempts=row.get("max_attempts", 4),
+        error_type=row.get("error_type"),
+        last_error=row.get("last_error"),
+        next_retry_at=row.get("next_retry_at"),
+        last_attempt_at=row.get("last_attempt_at"),
+        job_type=row.get("job_type") or JobType.LEGACY_SYNC,
+        payload=json.loads(payload_json) if payload_json else None,
     )
-
-
-def _migrate_add_skip_reason(conn: sqlite3.Connection) -> None:
-    """Adiciona coluna skip_reason em bancos existentes (migração incremental)."""
-    cur = conn.execute("PRAGMA table_info(jobs)")
-    colunas = {row["name"] for row in cur.fetchall()}
-    if "skip_reason" in colunas:
-        return
-
-    log.info("🔄 Migrando schema: adicionando coluna skip_reason...")
-    conn.execute("BEGIN")
-    conn.execute("ALTER TABLE jobs ADD COLUMN skip_reason TEXT")
-    conn.execute(
-        "UPDATE jobs SET skip_reason = error_message, error_message = NULL "
-        "WHERE status = 'skipped' AND error_message IS NOT NULL"
-    )
-    conn.execute("COMMIT")
-    log.info("✅ Migração skip_reason concluída.")
-
-
-def _migrate_add_retry_metadata(conn: sqlite3.Connection) -> None:
-    """
-    Adiciona colunas de retry automático em bancos existentes (migração incremental).
-
-    Defaults seguros para compatibilidade:
-    - attempt_count: 0
-    - max_attempts: 4
-    - next_retry_at: NULL (job pendente segue elegível)
-    """
-    cur = conn.execute("PRAGMA table_info(jobs)")
-    colunas = {row["name"] for row in cur.fetchall()}
-
-    novas_colunas: list[tuple[str, str]] = []
-    if "attempt_count" not in colunas:
-        novas_colunas.append(("attempt_count", "INTEGER NOT NULL DEFAULT 0"))
-    if "max_attempts" not in colunas:
-        novas_colunas.append(("max_attempts", "INTEGER NOT NULL DEFAULT 4"))
-    if "error_type" not in colunas:
-        novas_colunas.append(("error_type", "TEXT"))
-    if "last_error" not in colunas:
-        novas_colunas.append(("last_error", "TEXT"))
-    if "next_retry_at" not in colunas:
-        novas_colunas.append(("next_retry_at", "TEXT"))
-    if "last_attempt_at" not in colunas:
-        novas_colunas.append(("last_attempt_at", "TEXT"))
-
-    if not novas_colunas:
-        return
-
-    log.info(
-        "🔄 Migrando schema: adicionando colunas de retry automático (%d)...",
-        len(novas_colunas),
-    )
-    conn.execute("BEGIN")
-    for nome, ddl in novas_colunas:
-        conn.execute(f"ALTER TABLE jobs ADD COLUMN {nome} {ddl}")
-    conn.execute("COMMIT")
-    log.info("✅ Migração de retry automático concluída.")
-
-
-def _migrate_add_result_summary(conn: sqlite3.Connection) -> None:
-    """Adiciona coluna result_summary para guardar resumo do lote (migração incremental)."""
-    cur = conn.execute("PRAGMA table_info(jobs)")
-    colunas = {row["name"] for row in cur.fetchall()}
-    if "result_summary" in colunas:
-        return
-
-    log.info("🔄 Migrando schema: adicionando coluna result_summary...")
-    conn.execute("BEGIN")
-    conn.execute("ALTER TABLE jobs ADD COLUMN result_summary TEXT")
-    conn.execute("COMMIT")
-    log.info("✅ Migração result_summary concluída.")
-
-
-def _migrate_add_job_metadata(conn: sqlite3.Connection) -> None:
-    """Adiciona metadados do novo modelo de jobs (job_type e payload_json)."""
-    cur = conn.execute("PRAGMA table_info(jobs)")
-    colunas = {row["name"] for row in cur.fetchall()}
-
-    novas_colunas: list[tuple[str, str]] = []
-    if "job_type" not in colunas:
-        novas_colunas.append(("job_type", "TEXT NOT NULL DEFAULT 'legacy_sync'"))
-    if "payload_json" not in colunas:
-        novas_colunas.append(("payload_json", "TEXT"))
-
-    if not novas_colunas:
-        return
-
-    log.info(
-        "🔄 Migrando schema: adicionando metadados do modelo de jobs (%d)...",
-        len(novas_colunas),
-    )
-    conn.execute("BEGIN")
-    for nome, ddl in novas_colunas:
-        conn.execute(f"ALTER TABLE jobs ADD COLUMN {nome} {ddl}")
-    conn.execute("COMMIT")
-    log.info("✅ Migração de metadados do modelo de jobs concluída.")
 
 
 def init_db() -> None:
-    """Inicializa o banco de dados e cria a tabela de jobs, se necessário."""
-    global _INITIALIZED
-    if _INITIALIZED:
-        return
-
-    with _INIT_LOCK:
-        if _INITIALIZED:
-            return
-
-        conn = _conectar()
-        try:
-            conn.execute("BEGIN")
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS jobs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    source_type TEXT NOT NULL,
-                    source_identifier TEXT NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    job_type TEXT NOT NULL DEFAULT 'legacy_sync',
-                    payload_json TEXT,
-                    status TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    error_message TEXT,
-                    skip_reason TEXT,
-                    result_summary TEXT,
-                    total_records INTEGER,
-                    processed_records INTEGER,
-                    retry_count INTEGER NOT NULL DEFAULT 0,
-                    attempt_count INTEGER NOT NULL DEFAULT 0,
-                    max_attempts INTEGER NOT NULL DEFAULT 4,
-                    error_type TEXT,
-                    last_error TEXT,
-                    next_retry_at TEXT,
-                    last_attempt_at TEXT
-                )
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_jobs_status
-                    ON jobs (status);
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_jobs_hash_source
-                    ON jobs (content_hash, source_type, source_identifier);
-                """
-            )
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_jobs_status_next_retry
-                    ON jobs (status, next_retry_at);
-                """
-            )
-            conn.execute("COMMIT")
-            _migrate_add_skip_reason(conn)
-            _migrate_add_retry_metadata(conn)
-            _migrate_add_result_summary(conn)
-            _migrate_add_job_metadata(conn)
-            conn.execute(
-                """
-                CREATE INDEX IF NOT EXISTS idx_jobs_type_hash_source
-                    ON jobs (job_type, content_hash, source_type, source_identifier);
-                """
-            )
-            _INITIALIZED = True
-            log.info("🗄️ Banco de jobs inicializado com sucesso.")
-        except sqlite3.Error as exc:
-            conn.execute("ROLLBACK")
-            log.exception("❌ Erro ao inicializar banco de jobs: %s", exc)
-            raise JobStoreError("Erro ao inicializar banco de jobs") from exc
-        finally:
-            conn.close()
+    """No-op em PostgreSQL: schema é aplicado via db.init_schema() no boot."""
+    pass
 
 
 def criar_job(
@@ -368,104 +104,63 @@ def criar_job(
     job_type: str = JobType.LEGACY_SYNC,
     payload: Optional[dict[str, Any]] = None,
 ) -> Job:
-    """
-    Cria um novo job com status 'pending'.
-
-    Retorna o objeto Job criado (com id preenchido).
-    """
+    """Cria um novo job com status 'pending'."""
     agora = _agora_iso()
+    payload_str = json.dumps(payload, sort_keys=True, ensure_ascii=False) if payload is not None else None
 
-    def _op(conn: sqlite3.Connection) -> Job:
-        conn.execute("BEGIN")
-        cur = conn.execute(
-            """
-            INSERT INTO jobs (
-                source_type,
-                source_identifier,
-                content_hash,
-                job_type,
-                payload_json,
-                status,
-                created_at,
-                updated_at,
-                total_records,
-                processed_records,
-                retry_count
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO jobs (
+                    source_type, source_identifier, content_hash,
+                    job_type, payload_json, status,
+                    created_at, updated_at,
+                    total_records, processed_records, retry_count
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
+                RETURNING id
+                """,
+                (
+                    source_type, source_identifier, content_hash,
+                    job_type, payload_str, JobStatus.PENDING,
+                    agora, agora,
+                    total_records, 0 if total_records is not None else None,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-            """,
-            (
-                source_type,
-                source_identifier,
-                content_hash,
-                job_type,
-                (json.dumps(payload, sort_keys=True, ensure_ascii=False) if payload is not None else None),
-                JobStatus.PENDING,
-                agora,
-                agora,
-                total_records,
-                0 if total_records is not None else None,
-            ),
-        )
-        job_id = cur.lastrowid
-        conn.execute("COMMIT")
-        job = Job(
-            id=job_id,
-            source_type=source_type,
-            source_identifier=source_identifier,
-            content_hash=content_hash,
-            status="pending",
-            created_at=agora,
-            updated_at=agora,
-            total_records=total_records,
-            processed_records=0 if total_records is not None else None,
-            retry_count=0,
-            job_type=job_type,
-            payload=payload,
-        )
-        log.info(
-            "📌 Job criado | id=%s | job_type=%s | source_type=%s | source_identifier=%s",
-            job_id,
-            job_type,
-            source_type,
-            source_identifier,
-        )
-        return job
+            job_id = cur.fetchone()["id"]
 
-    return _with_lock_retry(_op, op_name="criar_job")
+    job = Job(
+        id=job_id,
+        source_type=source_type,
+        source_identifier=source_identifier,
+        content_hash=content_hash,
+        status="pending",
+        created_at=agora,
+        updated_at=agora,
+        total_records=total_records,
+        processed_records=0 if total_records is not None else None,
+        retry_count=0,
+        job_type=job_type,
+        payload=payload,
+    )
+    log.info(
+        "📌 Job criado | id=%s | job_type=%s | source_type=%s | source_identifier=%s",
+        job_id, job_type, source_type, source_identifier,
+    )
+    return job
 
 
 def buscar_jobs_pendentes(limit: int = 50) -> List[Job]:
-    """
-    Retorna a lista de jobs com status 'pending', ordenados por created_at.
-
-    Importante: esta função é voltada para inspeção/uso administrativo e
-    NÃO aplica a lógica de elegibilidade por next_retry_at. Ou seja, ela
-    pode incluir jobs pendentes cujo next_retry_at ainda esteja no futuro.
-
-    Para o consumo real da fila pelo worker (jobs elegíveis), usar
-    claim_next_pending_job(), que já respeita next_retry_at.
-    """
-    init_db()
-    conn = _conectar()
-    try:
-        cur = conn.execute(
-            """
-            SELECT *
-            FROM jobs
-            WHERE status = ?
-            ORDER BY created_at ASC
-            LIMIT ?
-            """,
-            (JobStatus.PENDING, limit),
-        )
-        rows = cur.fetchall()
-        return [_row_to_job(row) for row in rows]
-    except sqlite3.Error as exc:
-        log.exception("❌ Erro ao buscar jobs pendentes: %s", exc)
-        raise JobStoreError("Erro ao buscar jobs pendentes") from exc
-    finally:
-        conn.close()
+    """Lista jobs com status 'pending' (sem aplicar next_retry_at)."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM jobs WHERE status = %s ORDER BY created_at ASC LIMIT %s",
+                (JobStatus.PENDING, limit),
+            )
+            rows = cur.fetchall()
+    return [_row_to_job(row) for row in rows]
 
 
 def atualizar_status(
@@ -476,120 +171,78 @@ def atualizar_status(
     total_records: Optional[int] = None,
     increment_retry: bool = False,
 ) -> None:
-    """
-    Atualiza status do job e opcionalmente counters e retry_count.
-    """
+    """Atualiza status do job e opcionalmente counters."""
     agora = _agora_iso()
+    campos = ["status = %s", "updated_at = %s"]
+    valores: list[Any] = [novo_status, agora]
 
-    def _op(conn: sqlite3.Connection) -> None:
-        conn.execute("BEGIN")
+    if processed_records is not None:
+        campos.append("processed_records = %s")
+        valores.append(processed_records)
+    if total_records is not None:
+        campos.append("total_records = %s")
+        valores.append(total_records)
+    if increment_retry:
+        campos.append("retry_count = retry_count + 1")
 
-        campos: list[str] = ["status = ?", "updated_at = ?"]
-        valores: list[object] = [novo_status, agora]
+    valores.append(job_id)
+    sql = f"UPDATE jobs SET {', '.join(campos)} WHERE id = %s"
 
-        if processed_records is not None:
-            campos.append("processed_records = ?")
-            valores.append(processed_records)
-        if total_records is not None:
-            campos.append("total_records = ?")
-            valores.append(total_records)
-        if increment_retry:
-            campos.append("retry_count = retry_count + 1")
-
-        valores.append(job_id)
-
-        sql = f"UPDATE jobs SET {', '.join(campos)} WHERE id = ?"
-        conn.execute(sql, tuple(valores))
-        conn.execute("COMMIT")
-        log.info("🔄 Job %s atualizado para status='%s'.", job_id, novo_status)
-
-    _with_lock_retry(_op, op_name="atualizar_status")
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(valores))
+    log.info("🔄 Job %s atualizado para status='%s'.", job_id, novo_status)
 
 
 def atualizar_heartbeat(job_id: int) -> None:
-    """
-    Atualiza apenas updated_at do job (heartbeat para jobs longos).
-
-    Evita que o job seja considerado stale durante processamento demorado
-    (ex.: transformação pesada ou envio HTTP lento). Chamar em pontos seguros
-    do fluxo, sem alterar status nem outros campos.
-    """
-    init_db()
+    """Atualiza apenas updated_at do job (heartbeat para jobs longos)."""
     agora = _agora_iso()
-    conn = _conectar()
     try:
-        conn.execute("BEGIN")
-        conn.execute(
-            "UPDATE jobs SET updated_at = ? WHERE id = ?",
-            (agora, job_id),
-        )
-        conn.execute("COMMIT")
-    except sqlite3.Error as exc:
-        try:
-            conn.execute("ROLLBACK")
-        except Exception:
-            pass
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("UPDATE jobs SET updated_at = %s WHERE id = %s", (agora, job_id))
+    except Exception as exc:
         log.debug("Heartbeat job %s falhou (não crítico): %s", job_id, exc)
-    finally:
-        conn.close()
 
 
 def registrar_erro(job_id: int, mensagem: str) -> None:
     """Registra mensagem de erro e marca status como 'error'."""
-    init_db()
     agora = _agora_iso()
-    conn = _conectar()
-    try:
-        conn.execute("BEGIN")
-        conn.execute(
-            """
-            UPDATE jobs
-            SET status = ?,
-                error_message = ?,
-                result_summary = NULL,
-                last_error = ?,
-                error_type = COALESCE(error_type, 'permanent'),
-                next_retry_at = NULL,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (JobStatus.ERROR, mensagem[:1000], mensagem[:1000], agora, job_id),
-        )
-        conn.execute("COMMIT")
-        log.error("💥 Job %s marcado como error: %s", job_id, mensagem)
-    except sqlite3.Error as exc:
-        conn.execute("ROLLBACK")
-        log.exception("❌ Erro ao registrar erro do job %s: %s", job_id, exc)
-        raise JobStoreError("Erro ao registrar erro do job") from exc
-    finally:
-        conn.close()
+    msg = mensagem[:1000]
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE jobs
+                SET status = %s,
+                    error_message = %s,
+                    result_summary = NULL,
+                    last_error = %s,
+                    error_type = COALESCE(error_type, 'permanent'),
+                    next_retry_at = NULL,
+                    updated_at = %s
+                WHERE id = %s
+                """,
+                (JobStatus.ERROR, msg, msg, agora, job_id),
+            )
+    log.error("💥 Job %s marcado como error: %s", job_id, mensagem)
 
 
 def marcar_skipped(job_id: int, motivo: str | None = None) -> None:
     """Marca job como 'skipped' e registra motivo em skip_reason."""
-    init_db()
     agora = _agora_iso()
-    conn = _conectar()
-    try:
-        conn.execute("BEGIN")
-        conn.execute(
-            """
-            UPDATE jobs
-            SET status = 'skipped',
-                skip_reason = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (motivo[:500] if motivo else None, agora, job_id),
-        )
-        conn.execute("COMMIT")
-        log.info("⏭️ Job %s marcado como skipped. Motivo: %s", job_id, motivo)
-    except sqlite3.Error as exc:
-        conn.execute("ROLLBACK")
-        log.exception("❌ Erro ao marcar job %s como skipped: %s", job_id, exc)
-        raise JobStoreError("Erro ao marcar job como skipped") from exc
-    finally:
-        conn.close()
+    motivo_trunc = motivo[:500] if motivo else None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE jobs
+                SET status = 'skipped', skip_reason = %s, updated_at = %s
+                WHERE id = %s
+                """,
+                (motivo_trunc, agora, job_id),
+            )
+    log.info("⏭️ Job %s marcado como skipped. Motivo: %s", job_id, motivo)
 
 
 def agendar_retry(
@@ -599,45 +252,29 @@ def agendar_retry(
     last_error: str,
     error_type: str = ErrorType.TRANSIENT,
 ) -> None:
-    """
-    Reagenda um job para retry (status volta para 'pending' com next_retry_at futuro).
-
-    Importante: next_retry_at deve ser > agora para evitar loop apertado.
-    """
+    """Reagenda job para retry (status='pending' com next_retry_at futuro)."""
     agora = _agora_iso()
-
-    def _op(conn: sqlite3.Connection) -> None:
-        conn.execute("BEGIN")
-        conn.execute(
-            """
-            UPDATE jobs
-            SET status = 'pending',
-                error_type = ?,
-                last_error = ?,
-                error_message = ?,
-                result_summary = NULL,
-                next_retry_at = ?,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                error_type,
-                last_error[:1000],
-                last_error[:1000],
-                next_retry_at,
-                agora,
-                job_id,
-            ),
-        )
-        conn.execute("COMMIT")
-        log.warning(
-            "⏳ Job %s reagendado para retry | error_type=%s | next_retry_at=%s",
-            job_id,
-            error_type,
-            next_retry_at,
-        )
-
-    _with_lock_retry(_op, op_name="agendar_retry")
+    err = last_error[:1000]
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE jobs
+                SET status = 'pending',
+                    error_type = %s,
+                    last_error = %s,
+                    error_message = %s,
+                    result_summary = NULL,
+                    next_retry_at = %s,
+                    updated_at = %s
+                WHERE id = %s
+                """,
+                (error_type, err, err, next_retry_at, agora, job_id),
+            )
+    log.warning(
+        "⏳ Job %s reagendado para retry | error_type=%s | next_retry_at=%s",
+        job_id, error_type, next_retry_at,
+    )
 
 
 def marcar_falha_definitiva(
@@ -648,39 +285,24 @@ def marcar_falha_definitiva(
 ) -> None:
     """Marca job como 'error' sem reagendar (falha definitiva)."""
     agora = _agora_iso()
-
-    def _op(conn: sqlite3.Connection) -> None:
-        conn.execute("BEGIN")
-        conn.execute(
-            """
-            UPDATE jobs
-            SET status = ?,
-                error_type = ?,
-                last_error = ?,
-                error_message = ?,
-                result_summary = NULL,
-                next_retry_at = NULL,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                JobStatus.ERROR,
-                error_type,
-                last_error[:1000],
-                last_error[:1000],
-                agora,
-                job_id,
-            ),
-        )
-        conn.execute("COMMIT")
-        log.error(
-            "💥 Job %s falha definitiva | error_type=%s | %s",
-            job_id,
-            error_type,
-            last_error,
-        )
-
-    _with_lock_retry(_op, op_name="marcar_falha_definitiva")
+    err = last_error[:1000]
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE jobs
+                SET status = %s,
+                    error_type = %s,
+                    last_error = %s,
+                    error_message = %s,
+                    result_summary = NULL,
+                    next_retry_at = NULL,
+                    updated_at = %s
+                WHERE id = %s
+                """,
+                (JobStatus.ERROR, error_type, err, err, agora, job_id),
+            )
+    log.error("💥 Job %s falha definitiva | error_type=%s | %s", job_id, error_type, last_error)
 
 
 def marcar_sucesso(
@@ -692,69 +314,53 @@ def marcar_sucesso(
 ) -> None:
     """Marca job como success e limpa estado de erro/retry."""
     agora = _agora_iso()
-
-    def _op(conn: sqlite3.Connection) -> None:
-        conn.execute("BEGIN")
-        conn.execute(
-            """
-            UPDATE jobs
-            SET status = ?,
-                processed_records = ?,
-                total_records = ?,
-                result_summary = ?,
-                error_message = NULL,
-                error_type = NULL,
-                last_error = NULL,
-                next_retry_at = NULL,
-                updated_at = ?
-            WHERE id = ?
-            """,
-            (
-                JobStatus.SUCCESS,
-                processed_records,
-                total_records,
-                (result_summary[:1000] if result_summary else None),
-                agora,
-                job_id,
-            ),
-        )
-        conn.execute("COMMIT")
-        log.info("✅ Job %s atualizado para status='success'.", job_id)
-
-    _with_lock_retry(_op, op_name="marcar_sucesso")
+    summary = result_summary[:1000] if result_summary else None
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE jobs
+                SET status = %s,
+                    processed_records = %s,
+                    total_records = %s,
+                    result_summary = %s,
+                    error_message = NULL,
+                    error_type = NULL,
+                    last_error = NULL,
+                    next_retry_at = NULL,
+                    updated_at = %s
+                WHERE id = %s
+                """,
+                (JobStatus.SUCCESS, processed_records, total_records, summary, agora, job_id),
+            )
+    log.info("✅ Job %s atualizado para status='success'.", job_id)
 
 
 def _idempotency_ja_sucesso(
-    conn: sqlite3.Connection,
+    cur,
     mode: str,
     job_type: str,
     source_type: str,
     source_identifier: str,
     content_hash: str,
 ) -> bool:
-    """
-    Verifica se já existe job com status 'success' conforme a política de idempotência.
-
-    - content_only: qualquer job success com o mesmo content_hash → True.
-    - content_and_source: job success com mesmo (source_type, source_identifier, content_hash) → True.
-    """
+    """Verifica se já existe job 'success' conforme a política de idempotência."""
     mode = (mode or "content_and_source").strip().lower()
     if mode == "content_only":
-        cur = conn.execute(
+        cur.execute(
             """
-            SELECT 1
-            FROM jobs
-            WHERE job_type = ? AND content_hash = ? AND status = 'success'
+            SELECT 1 FROM jobs
+            WHERE job_type = %s AND content_hash = %s AND status = 'success'
             LIMIT 1
             """,
             (job_type, content_hash),
         )
     else:
-        cur = conn.execute(
+        cur.execute(
             """
             SELECT 1 FROM jobs
-            WHERE job_type = ? AND source_type = ? AND source_identifier = ? AND content_hash = ?
-              AND status = 'success'
+            WHERE job_type = %s AND source_type = %s AND source_identifier = %s
+              AND content_hash = %s AND status = 'success'
             LIMIT 1
             """,
             (job_type, source_type, source_identifier, content_hash),
@@ -769,39 +375,19 @@ def hash_ja_processado_com_sucesso(
     *,
     job_type: str = JobType.LEGACY_SYNC,
 ) -> bool:
-    """
-    Verifica se já existe job bem-sucedido conforme config.IDEMPOTENCY_MODE.
-
-    - content_only: mesmo conteúdo em qualquer origem já processado → True.
-    - content_and_source: mesmo conteúdo na mesma origem já processado → True.
-    """
-    init_db()
+    """Verifica se já existe job bem-sucedido conforme config.IDEMPOTENCY_MODE."""
     mode = getattr(config, "IDEMPOTENCY_MODE", "content_and_source")
-    conn = _conectar()
-    try:
-        achou = _idempotency_ja_sucesso(
-            conn, mode, job_type, source_type, source_identifier, content_hash
-        )
-        if achou:
-            log.info(
-                "♻️ Conteúdo já processado com sucesso (idempotência: %s) | job_type=%s | source_type=%s | source_identifier=%s",
-                mode,
-                job_type,
-                source_type,
-                source_identifier,
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            achou = _idempotency_ja_sucesso(
+                cur, mode, job_type, source_type, source_identifier, content_hash
             )
-        return achou
-    except sqlite3.Error as exc:
-        log.exception(
-            "❌ Erro ao verificar hash já processado (job_type=%s, source_type=%s, source_identifier=%s): %s",
-            job_type,
-            source_type,
-            source_identifier,
-            exc,
+    if achou:
+        log.info(
+            "♻️ Conteúdo já processado (idempotência: %s) | job_type=%s | source=%s",
+            mode, job_type, source_identifier,
         )
-        raise JobStoreError("Erro ao verificar hash já processado") from exc
-    finally:
-        conn.close()
+    return achou
 
 
 def criar_job_com_idempotencia(
@@ -813,104 +399,62 @@ def criar_job_com_idempotencia(
     job_type: str = JobType.LEGACY_SYNC,
     payload: Optional[dict[str, Any]] = None,
 ) -> Job:
-    """
-    Cria um job com idempotência conforme config.IDEMPOTENCY_MODE.
-
-    - content_and_source: se já existir job 'success' para o mesmo
-      (source_type, source_identifier, content_hash) → novo job com status 'skipped'.
-    - content_only: se já existir job 'success' com o mesmo content_hash
-      (qualquer origem) → novo job com status 'skipped'.
-    Caso contrário → cria job 'pending' normal.
-    """
+    """Cria job com idempotência conforme config.IDEMPOTENCY_MODE."""
     mode = getattr(config, "IDEMPOTENCY_MODE", "content_and_source")
     agora = _agora_iso()
+    payload_str = json.dumps(payload, sort_keys=True, ensure_ascii=False) if payload is not None else None
 
-    def _op(conn: sqlite3.Connection) -> Job:
-        conn.execute("BEGIN")
-
-        ja_sucesso = _idempotency_ja_sucesso(
-            conn, mode, job_type, source_type, source_identifier, content_hash
-        )
-
-        status_inicial = JobStatus.SKIPPED if ja_sucesso else JobStatus.PENDING
-        processed_records = 0 if (total_records is not None and not ja_sucesso) else None
-
-        cur = conn.execute(
-            """
-            INSERT INTO jobs (
-                source_type,
-                source_identifier,
-                content_hash,
-                job_type,
-                payload_json,
-                status,
-                created_at,
-                updated_at,
-                skip_reason,
-                total_records,
-                processed_records,
-                retry_count
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            ja_sucesso = _idempotency_ja_sucesso(
+                cur, mode, job_type, source_type, source_identifier, content_hash
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
-            """,
-            (
-                source_type,
-                source_identifier,
-                content_hash,
-                job_type,
-                (json.dumps(payload, sort_keys=True, ensure_ascii=False) if payload is not None else None),
-                status_inicial,
-                agora,
-                agora,
-                "Conteúdo já processado anteriormente com sucesso."
-                if ja_sucesso
-                else None,
-                total_records,
-                processed_records,
-            ),
-        )
-        job_id = cur.lastrowid
-        conn.execute("COMMIT")
+            status_inicial = JobStatus.SKIPPED if ja_sucesso else JobStatus.PENDING
+            processed_records = 0 if (total_records is not None and not ja_sucesso) else None
+            skip_reason = "Conteúdo já processado anteriormente com sucesso." if ja_sucesso else None
 
-        job = Job(
-            id=job_id,
-            source_type=source_type,
-            source_identifier=source_identifier,
-            content_hash=content_hash,
-            status=status_inicial,
-            created_at=agora,
-            updated_at=agora,
-            skip_reason=(
-                "Conteúdo já processado anteriormente com sucesso." if ja_sucesso else None
-            ),
-            total_records=total_records,
-            processed_records=processed_records,
-            retry_count=0,
-            job_type=job_type,
-            payload=payload,
-        )
-
-        if ja_sucesso:
-            log.info(
-                "⏭️ Job %s criado como skipped (idempotência: %s) | job_type=%s | source_type=%s | source_identifier=%s",
-                job_id,
-                mode,
-                job_type,
-                source_type,
-                source_identifier,
+            cur.execute(
+                """
+                INSERT INTO jobs (
+                    source_type, source_identifier, content_hash,
+                    job_type, payload_json, status,
+                    created_at, updated_at, skip_reason,
+                    total_records, processed_records, retry_count
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0)
+                RETURNING id
+                """,
+                (
+                    source_type, source_identifier, content_hash,
+                    job_type, payload_str, status_inicial,
+                    agora, agora, skip_reason,
+                    total_records, processed_records,
+                ),
             )
-        else:
-            log.info(
-                "📌 Job %s criado como pending | job_type=%s | source_type=%s | source_identifier=%s",
-                job_id,
-                job_type,
-                source_type,
-                source_identifier,
-            )
+            job_id = cur.fetchone()["id"]
 
-        return job
+    job = Job(
+        id=job_id,
+        source_type=source_type,
+        source_identifier=source_identifier,
+        content_hash=content_hash,
+        status=status_inicial,
+        created_at=agora,
+        updated_at=agora,
+        skip_reason=skip_reason,
+        total_records=total_records,
+        processed_records=processed_records,
+        retry_count=0,
+        job_type=job_type,
+        payload=payload,
+    )
 
-    return _with_lock_retry(_op, op_name="criar_job_com_idempotencia")
+    if ja_sucesso:
+        log.info("⏭️ Job %s criado como skipped (idempotência: %s)", job_id, mode)
+    else:
+        log.info("📌 Job %s criado como pending | job_type=%s", job_id, job_type)
+
+    return job
 
 
 def criar_job_validacao_google_sheets(
@@ -966,220 +510,139 @@ def criar_job_aprovacao_envio(
 
 def obter_job_por_id(job_id: int) -> Optional[Job]:
     """Obtém um job específico pelo ID."""
-    init_db()
-    conn = _conectar()
-    try:
-        cur = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
-        row = cur.fetchone()
-        if row is None:
-            return None
-        return _row_to_job(row)
-    except sqlite3.Error as exc:
-        log.exception("❌ Erro ao obter job %s: %s", job_id, exc)
-        raise JobStoreError("Erro ao obter job") from exc
-    finally:
-        conn.close()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM jobs WHERE id = %s", (job_id,))
+            row = cur.fetchone()
+    if row is None:
+        return None
+    return _row_to_job(row)
 
 
 def obter_contagem_jobs_por_status() -> dict[str, int]:
     """Retorna a contagem de jobs agrupados por status."""
-    init_db()
-    conn = _conectar()
-    try:
-        cur = conn.execute(
-            "SELECT status, COUNT(*) as total FROM jobs GROUP BY status"
-        )
-        return {row["status"]: int(row["total"]) for row in cur.fetchall()}
-    except sqlite3.Error as exc:
-        log.exception("❌ Erro ao obter contagem de jobs por status: %s", exc)
-        raise JobStoreError("Erro ao obter contagem de jobs por status") from exc
-    finally:
-        conn.close()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT status, COUNT(*) AS total FROM jobs GROUP BY status")
+            rows = cur.fetchall()
+    return {row["status"]: int(row["total"]) for row in rows}
 
 
 def obter_contagem_jobs_por_error_type() -> dict[str, int]:
-    """Retorna a contagem de jobs agrupados por error_type (apenas não nulos)."""
-    init_db()
-    conn = _conectar()
-    try:
-        cur = conn.execute(
-            "SELECT error_type, COUNT(*) as total FROM jobs "
-            "WHERE error_type IS NOT NULL GROUP BY error_type"
-        )
-        return {row["error_type"]: int(row["total"]) for row in cur.fetchall()}
-    except sqlite3.Error as exc:
-        log.exception("❌ Erro ao obter contagem de jobs por error_type: %s", exc)
-        raise JobStoreError("Erro ao obter contagem de jobs por error_type") from exc
-    finally:
-        conn.close()
+    """Retorna a contagem de jobs agrupados por error_type."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT error_type, COUNT(*) AS total FROM jobs "
+                "WHERE error_type IS NOT NULL GROUP BY error_type"
+            )
+            rows = cur.fetchall()
+    return {row["error_type"]: int(row["total"]) for row in rows}
 
 
 def obter_job_pendente_mais_antigo() -> Optional[Job]:
-    """
-    Retorna o job com status 'pending' mais antigo por created_at.
-
-    Atenção: assim como buscar_jobs_pendentes(), esta função não considera
-    next_retry_at; é útil para inspeção manual de envelhecimento da fila.
-    """
-    init_db()
-    conn = _conectar()
-    try:
-        cur = conn.execute(
-            """
-            SELECT *
-            FROM jobs
-            WHERE status = ?
-            ORDER BY created_at ASC
-            LIMIT 1
-            """
-            ,
-            (JobStatus.PENDING,),
-        )
-        row = cur.fetchone()
-        if row is None:
-            return None
-        return _row_to_job(row)
-    except sqlite3.Error as exc:
-        log.exception("❌ Erro ao obter job pendente mais antigo: %s", exc)
-        raise JobStoreError("Erro ao obter job pendente mais antigo") from exc
-    finally:
-        conn.close()
+    """Retorna o job 'pending' mais antigo por created_at."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM jobs WHERE status = %s ORDER BY created_at ASC LIMIT 1",
+                (JobStatus.PENDING,),
+            )
+            row = cur.fetchone()
+    return _row_to_job(row) if row else None
 
 
 def obter_ultima_execucao_com_sucesso() -> Optional[str]:
-    """
-    Retorna o timestamp ISO (updated_at) da última execução bem-sucedida (status='success').
-    """
-    init_db()
-    conn = _conectar()
-    try:
-        cur = conn.execute(
-            "SELECT MAX(updated_at) AS last_success FROM jobs WHERE status = ?",
-            (JobStatus.SUCCESS,),
-        )
-        row = cur.fetchone()
-        return row["last_success"]
-    except sqlite3.Error as exc:
-        log.exception("❌ Erro ao obter última execução com sucesso: %s", exc)
-        raise JobStoreError("Erro ao obter última execução com sucesso") from exc
-    finally:
-        conn.close()
+    """Retorna o timestamp ISO da última execução bem-sucedida."""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT MAX(updated_at) AS last_success FROM jobs WHERE status = %s",
+                (JobStatus.SUCCESS,),
+            )
+            row = cur.fetchone()
+    return row["last_success"] if row else None
 
 
 def obter_estatisticas_recentes(janela_minutos: int = 60) -> dict[str, int]:
-    """
-    Retorna estatísticas simples de retries/exhausted em uma janela recente.
-
-    - retries: jobs com attempt_count > 1 na janela (qualquer status).
-    - exhausted: jobs com status='error' e error_type='exhausted' na janela.
-    """
-    init_db()
+    """Estatísticas de retries/exhausted em janela recente."""
     cutoff_dt = datetime.now(timezone.utc) - timedelta(minutes=janela_minutos)
     cutoff = cutoff_dt.replace(microsecond=0).isoformat()
 
-    conn = _conectar()
-    try:
-        cur = conn.execute(
-            "SELECT COUNT(*) AS total FROM jobs "
-            "WHERE attempt_count > 1 AND updated_at >= ?",
-            (cutoff,),
-        )
-        retries = int(cur.fetchone()["total"])
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) AS total FROM jobs WHERE attempt_count > 1 AND updated_at >= %s",
+                (cutoff,),
+            )
+            retries = int(cur.fetchone()["total"])
 
-        cur = conn.execute(
-            "SELECT COUNT(*) AS total FROM jobs "
-            "WHERE status = ? AND error_type = ? AND updated_at >= ?",
-            (JobStatus.ERROR, ErrorType.EXHAUSTED, cutoff),
-        )
-        exhausted = int(cur.fetchone()["total"])
+            cur.execute(
+                "SELECT COUNT(*) AS total FROM jobs "
+                "WHERE status = %s AND error_type = %s AND updated_at >= %s",
+                (JobStatus.ERROR, ErrorType.EXHAUSTED, cutoff),
+            )
+            exhausted = int(cur.fetchone()["total"])
 
-        return {
-            "retries": retries,
-            "exhausted": exhausted,
-        }
-    except sqlite3.Error as exc:
-        log.exception("❌ Erro ao obter estatísticas recentes: %s", exc)
-        raise JobStoreError("Erro ao obter estatísticas recentes") from exc
-    finally:
-        conn.close()
+    return {"retries": retries, "exhausted": exhausted}
 
 
 def listar_jobs_por_status(statuses: Iterable[str]) -> List[Job]:
     """Lista jobs filtrando por um ou mais status."""
-    init_db()
-    conn = _conectar()
-    try:
-        placeholders = ",".join("?" for _ in statuses)
-        sql = f"SELECT * FROM jobs WHERE status IN ({placeholders}) ORDER BY created_at DESC"
-        cur = conn.execute(sql, tuple(statuses))
-        rows = cur.fetchall()
-        return [_row_to_job(row) for row in rows]
-    except sqlite3.Error as exc:
-        log.exception("❌ Erro ao listar jobs por status: %s", exc)
-        raise JobStoreError("Erro ao listar jobs por status") from exc
-    finally:
-        conn.close()
+    statuses_list = list(statuses)
+    if not statuses_list:
+        return []
+    placeholders = ",".join(["%s"] * len(statuses_list))
+    sql = f"SELECT * FROM jobs WHERE status IN ({placeholders}) ORDER BY created_at DESC"
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, tuple(statuses_list))
+            rows = cur.fetchall()
+    return [_row_to_job(row) for row in rows]
 
 
 def claim_next_pending_job() -> Optional[Job]:
     """
     Reivindica atomicamente o próximo job pendente (pending → processing).
 
-    Estratégia transacional:
-      BEGIN IMMEDIATE adquire um lock RESERVED no arquivo SQLite,
-      impedindo que outra conexão inicie escrita simultânea.
-      Dentro da transação: SELECT do próximo pending → UPDATE para
-      processing → SELECT completo do job. Se não houver pending,
-      retorna None sem alterar nada.
-
-    Resultado: mesmo com múltiplos workers, cada job é reivindicado
-    por exatamente um processo.
+    Usa FOR UPDATE SKIP LOCKED — workers concorrentes nunca pegam o mesmo job.
     """
     agora = _agora_iso()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id FROM jobs
+                WHERE status = 'pending'
+                  AND (next_retry_at IS NULL OR next_retry_at <= %s)
+                ORDER BY created_at ASC
+                LIMIT 1
+                FOR UPDATE SKIP LOCKED
+                """,
+                (agora,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
 
-    def _op(conn: sqlite3.Connection) -> Optional[Job]:
-        conn.execute("BEGIN IMMEDIATE")
-        cur = conn.execute(
-            """
-            SELECT id
-            FROM jobs
-            WHERE status = 'pending'
-              AND (next_retry_at IS NULL OR next_retry_at <= ?)
-            ORDER BY created_at ASC
-            LIMIT 1
-            """,
-            (agora,),
-        )
-        row = cur.fetchone()
-        if row is None:
-            conn.execute("COMMIT")
-            return None
+            job_id = row["id"]
+            cur.execute(
+                """
+                UPDATE jobs
+                SET status = 'processing',
+                    updated_at = %s,
+                    last_attempt_at = %s,
+                    attempt_count = attempt_count + 1
+                WHERE id = %s
+                """,
+                (agora, agora, job_id),
+            )
+            cur.execute("SELECT * FROM jobs WHERE id = %s", (job_id,))
+            row_full = cur.fetchone()
 
-        job_id = row["id"]
-        conn.execute(
-            """
-            UPDATE jobs
-            SET status = 'processing',
-                updated_at = ?,
-                last_attempt_at = ?,
-                attempt_count = attempt_count + 1
-            WHERE id = ?
-            """,
-            (agora, agora, job_id),
-        )
-        cur = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,))
-        row = cur.fetchone()
-        conn.execute("COMMIT")
-
-        job = _row_to_job(row)
-        log.info(
-            "🔒 Job %s reivindicado (pending → processing) | source=%s",
-            job_id,
-            job.source_identifier,
-        )
-        return job
-
-    return _with_lock_retry(_op, op_name="claim_next_pending_job")
+    job = _row_to_job(row_full)
+    log.info("🔒 Job %s reivindicado (pending → processing) | source=%s", job_id, job.source_identifier)
+    return job
 
 
 def requeue_stale_processing_jobs(
@@ -1189,133 +652,86 @@ def requeue_stale_processing_jobs(
     """
     Reenfileira jobs presos em 'processing' há mais tempo que o limite.
 
-    Semântica dos contadores:
-      - retry_count: usado APENAS aqui para contar quantas vezes o job foi
-        devolvido de 'processing' para 'pending' por stale recovery
-        (worker possivelmente morto ou travado).
-      - attempt_count/max_attempts: usados APENAS pelo retry automático
-        de falhas transitórias no processamento/envio (worker.py).
-        Esta função não altera nem consulta attempt_count/max_attempts
-        nem next_retry_at.
-
-    A ideia é evitar ambiguidade: stale recovery lida com jobs presos em
-    'processing'; retry automático lida com jobs que completam uma tentativa
-    e falham de maneira transitória/permanente.
-
-    Observação arquitetural: esta função contém hoje uma exceção pontual à
-    responsabilidade de "persistência pura" ao acionar um alerta quando um
-    job stale é definitivamente marcado como 'error' por exceder retry_count
-    (job envenenado). Essa decisão foi adotada de forma pragmática para
-    notificar falhas terminais de stale recovery sem alterar a assinatura
-    ou o fluxo do worker. Se no futuro houver uma camada de domínio/serviço
-    separada, essa lógica de alerta deve ser deslocada para lá.
-
-    Se o worker morrer durante o processamento, o job fica stuck em
-    'processing'. Esta rotina:
-      - Jobs com retry_count >= max_retries: marca como 'error' (job envenenado).
-      - Jobs com retry_count < max_retries: devolve para 'pending' com retry_count + 1.
-
-    Args:
-        timeout_seconds: Tempo máximo em processing antes de considerar
-            stale. Se None, usa config.PROCESSING_STALE_SECONDS.
-        max_retries: Limite de re-tentativas. Se None, usa config.STALE_MAX_RETRIES.
-
-    Returns:
-        Soma dos jobs afetados (marcados como error + reenfileirados).
+    - retry_count >= max_retries: marca como 'error' (job envenenado).
+    - retry_count < max_retries: devolve para 'pending' com retry_count + 1.
     """
     if timeout_seconds is None:
         timeout_seconds = config.PROCESSING_STALE_SECONDS
     if max_retries is None:
         max_retries = getattr(config, "STALE_MAX_RETRIES", 3)
 
-    init_db()
     agora = _agora_iso()
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)
-    ).replace(microsecond=0).isoformat()
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=timeout_seconds)).replace(microsecond=0).isoformat()
 
-    def _op(conn: sqlite3.Connection) -> int:
-        conn.execute("BEGIN IMMEDIATE")
-
-        # 1) Jobs stale com retry_count >= max_retries → error (job envenenado)
-        cur = conn.execute(
-            """
-            UPDATE jobs
-            SET status = 'error',
-                error_message = 'Max retries excedido',
-                updated_at = ?
-            WHERE status = 'processing'
-              AND updated_at <= ?
-              AND retry_count >= ?
-            """,
-            (agora, cutoff, max_retries),
-        )
-        count_error = cur.rowcount
-
-        # Alerta apenas para jobs efetivamente envenenados (marcados como error).
-        if count_error > 0:
-            cur_alert = conn.execute(
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            # 1) Jobs stale com retry_count >= max_retries → error (envenenado)
+            cur.execute(
                 """
-                SELECT id, source_type, source_identifier, retry_count
-                FROM jobs
-                WHERE status = 'error'
-                  AND error_message = 'Max retries excedido'
-                  AND updated_at = ?
-                  AND retry_count >= ?
+                UPDATE jobs
+                SET status = 'error',
+                    error_message = 'Max retries excedido',
+                    updated_at = %s
+                WHERE status = 'processing'
+                  AND updated_at <= %s
+                  AND retry_count >= %s
                 """,
-                (agora, max_retries),
+                (agora, cutoff, max_retries),
             )
-            rows = cur_alert.fetchall()
-            for row in rows:
-                try:
-                    alertar_falha_definitiva(
-                        job_id=row["id"],
-                        status="error",
-                                error_type=ErrorType.STALE_EXHAUSTED,
-                        attempt_count=row["retry_count"],
-                        max_attempts=max_retries,
-                        source_type=row["source_type"],
-                        source_identifier=row["source_identifier"],
-                        mensagem_erro="Max retries excedido (stale processing)",
-                    )
-                except Exception:
-                    log.debug(
-                        "Falha ao enviar alerta de job stale envenenado (ignorado) | job_id=%s",
-                        row["id"],
-                    )
+            count_error = cur.rowcount
 
-        # 2) Jobs stale com retry_count < max_retries → pending (nova tentativa)
-        cur = conn.execute(
-            """
-            UPDATE jobs
-            SET status = 'pending',
-                updated_at = ?,
-                retry_count = retry_count + 1
-            WHERE status = 'processing'
-              AND updated_at <= ?
-              AND retry_count < ?
-            """,
-            (agora, cutoff, max_retries),
+            # Alertar para jobs envenenados
+            if count_error > 0:
+                cur.execute(
+                    """
+                    SELECT id, source_type, source_identifier, retry_count
+                    FROM jobs
+                    WHERE status = 'error'
+                      AND error_message = 'Max retries excedido'
+                      AND updated_at = %s
+                      AND retry_count >= %s
+                    """,
+                    (agora, max_retries),
+                )
+                rows = cur.fetchall()
+                for row in rows:
+                    try:
+                        alertar_falha_definitiva(
+                            job_id=row["id"],
+                            status="error",
+                            error_type=ErrorType.STALE_EXHAUSTED,
+                            attempt_count=row["retry_count"],
+                            max_attempts=max_retries,
+                            source_type=row["source_type"],
+                            source_identifier=row["source_identifier"],
+                            mensagem_erro="Max retries excedido (stale processing)",
+                        )
+                    except Exception:
+                        log.debug("Falha ao enviar alerta de job stale | job_id=%s", row["id"])
+
+            # 2) Jobs stale com retry_count < max_retries → pending (nova tentativa)
+            cur.execute(
+                """
+                UPDATE jobs
+                SET status = 'pending',
+                    updated_at = %s,
+                    retry_count = retry_count + 1
+                WHERE status = 'processing'
+                  AND updated_at <= %s
+                  AND retry_count < %s
+                """,
+                (agora, cutoff, max_retries),
+            )
+            count_requeued = cur.rowcount
+
+    total = count_error + count_requeued
+    if total > 0:
+        log.warning(
+            "♻️ %d job(s) stale processado(s): %d como error, %d reenfileirado(s) "
+            "(timeout=%ds, max_retries=%d).",
+            total, count_error, count_requeued, timeout_seconds, max_retries,
         )
-        count_requeued = cur.rowcount
-
-        conn.execute("COMMIT")
-
-        total = count_error + count_requeued
-        if total > 0:
-            log.warning(
-                "♻️ %d job(s) stale em 'processing' processado(s): "
-                "%d marcado(s) como error (max retries), %d reenfileirado(s) "
-                "(timeout=%ds, max_retries=%d).",
-                total,
-                count_error,
-                count_requeued,
-                timeout_seconds,
-                max_retries,
-            )
-        return total
-
-    return _with_lock_retry(_op, op_name="requeue_stale_processing_jobs")
+    return total
 
 
 __all__ = [
