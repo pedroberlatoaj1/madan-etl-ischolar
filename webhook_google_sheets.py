@@ -76,6 +76,7 @@ from snapshot_store import save_snapshot
 from utils.hash_utils import sha256_bytes, sha256_dataframe_normalizado
 from validacao_lote_store import ValidacaoLoteStore
 from aprovacao_lote_store import AprovacaoLoteStore
+from db import get_connection
 
 log = configurar_logger("etl.webhook")
 
@@ -641,6 +642,32 @@ def requer_autenticacao(f: Callable[..., Any]) -> Callable[..., Any]:
         return f(*args, **kwargs)
 
     return decorado
+
+
+def _requer_lumni_api_key(f: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(f)
+    def _decorado(*args: Any, **kwargs: Any):
+        chave = os.environ.get("LUMNI_API_KEY", "").strip()
+        if not chave:
+            log.warning(
+                "LUMNI_API_KEY nao configurada — requisicao Lumni rejeitada | path=%s",
+                request.path,
+            )
+            return jsonify({"error": "api_not_configured"}), 503
+        header = request.headers.get("Authorization", "")
+        if not header.startswith("Bearer "):
+            return jsonify({"error": "unauthorized"}), 401
+        token = header[len("Bearer "):]
+        if not hmac.compare_digest(token, chave):
+            log.warning(
+                "Token Lumni invalido | ip=%s | path=%s",
+                _request_ip(),
+                request.path,
+            )
+            return jsonify({"error": "unauthorized"}), 401
+        return f(*args, **kwargs)
+
+    return _decorado
 
 
 def _json_erro(
@@ -1224,6 +1251,218 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
         if job is None:
             return _json_erro("Job nao encontrado.", 404)
         return jsonify(_serializar_job(job)), 200
+
+    # ------------------------------------------------------------------
+    # API Lumni — consulta de notas para o sistema de dashboards do Guru
+    # ------------------------------------------------------------------
+
+    @app.get("/api/v1/health")
+    def lumni_health():
+        return jsonify({"status": "ok", "api": "lumni-notas", "versao": "1.0"}), 200
+
+    @app.get("/api/v1/notas/aluno/<int:id_matricula>")
+    @_requer_lumni_api_key
+    def lumni_notas_aluno(id_matricula: int):
+        trimestre = request.args.get("trimestre", "").strip() or None
+        disciplina = request.args.get("disciplina", "").strip() or None
+        componente = request.args.get("componente", "").strip() or None
+
+        sql = """
+            SELECT DISTINCT ON (disciplina, trimestre, componente)
+                componente, disciplina, trimestre,
+                valor_bruta, criado_em, lote_id, id_disciplina, id_avaliacao, estudante
+            FROM envio_lote_audit
+            WHERE id_matricula = %s
+              AND status = 'enviado'
+              AND dry_run = 0
+        """
+        params: list[Any] = [id_matricula]
+
+        if trimestre:
+            sql += " AND trimestre = %s"
+            params.append(trimestre)
+        if disciplina:
+            sql += " AND disciplina ILIKE %s"
+            params.append(f"%{disciplina}%")
+        if componente:
+            sql += " AND componente = %s"
+            params.append(componente)
+
+        sql += " ORDER BY disciplina, trimestre, componente, criado_em DESC"
+
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    rows = cur.fetchall()
+        except Exception:
+            log.exception("Erro ao consultar notas do aluno | id_matricula=%s", id_matricula)
+            return jsonify({"error": "internal_server_error"}), 500
+
+        if not rows:
+            return jsonify({"error": "not_found"}), 404
+
+        estudante = rows[0]["estudante"] or ""
+        notas = [
+            {
+                "componente": r["componente"],
+                "disciplina": r["disciplina"],
+                "trimestre": r["trimestre"],
+                "valor": r["valor_bruta"],
+                "enviado_em": r["criado_em"],
+                "lote_id": r["lote_id"],
+                "id_disciplina": r["id_disciplina"],
+                "id_avaliacao": r["id_avaliacao"],
+            }
+            for r in rows
+        ]
+        return jsonify(
+            {
+                "id_matricula": id_matricula,
+                "estudante": estudante,
+                "total": len(notas),
+                "notas": notas,
+            }
+        ), 200
+
+    @app.get("/api/v1/notas/turma/<int:id_disciplina>")
+    @_requer_lumni_api_key
+    def lumni_notas_turma(id_disciplina: int):
+        trimestre = request.args.get("trimestre", "").strip() or None
+        componente = request.args.get("componente", "").strip() or None
+
+        sql = """
+            SELECT id_matricula, estudante, componente, trimestre,
+                   disciplina, valor_bruta, criado_em
+            FROM envio_lote_audit
+            WHERE id_disciplina = %s
+              AND status = 'enviado'
+              AND dry_run = 0
+        """
+        params: list[Any] = [id_disciplina]
+
+        if trimestre:
+            sql += " AND trimestre = %s"
+            params.append(trimestre)
+        if componente:
+            sql += " AND componente = %s"
+            params.append(componente)
+
+        sql += " ORDER BY id_matricula, trimestre, componente"
+
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, params)
+                    rows = cur.fetchall()
+        except Exception:
+            log.exception("Erro ao consultar notas da turma | id_disciplina=%s", id_disciplina)
+            return jsonify({"error": "internal_server_error"}), 500
+
+        nome_disciplina = rows[0]["disciplina"] if rows else None
+        total_alunos = len({r["id_matricula"] for r in rows})
+        notas = [
+            {
+                "id_matricula": r["id_matricula"],
+                "estudante": r["estudante"],
+                "componente": r["componente"],
+                "trimestre": r["trimestre"],
+                "valor": r["valor_bruta"],
+                "enviado_em": r["criado_em"],
+            }
+            for r in rows
+        ]
+        return jsonify(
+            {
+                "id_disciplina": id_disciplina,
+                "disciplina": nome_disciplina,
+                "total_alunos": total_alunos,
+                "total_notas": len(notas),
+                "notas": notas,
+            }
+        ), 200
+
+    @app.get("/api/v1/notas/lote/<path:lote_id>")
+    @_requer_lumni_api_key
+    def lumni_notas_lote(lote_id: str):
+        sql = """
+            SELECT r.status          AS status_lote,
+                   r.quantidade_enviada,
+                   a.id_matricula,
+                   a.estudante,
+                   a.componente,
+                   a.disciplina,
+                   a.trimestre,
+                   a.valor_bruta,
+                   a.criado_em
+            FROM resultados_envio_lote r
+            LEFT JOIN envio_lote_audit a
+                   ON a.lote_id = r.lote_id
+                  AND a.dry_run = 0
+            WHERE r.lote_id = %s
+        """
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, [lote_id])
+                    rows = cur.fetchall()
+        except Exception:
+            log.exception("Erro ao consultar notas do lote | lote_id=%s", lote_id)
+            return jsonify({"error": "internal_server_error"}), 500
+
+        if not rows:
+            return jsonify({"error": "not_found"}), 404
+
+        status_lote = rows[0]["status_lote"]
+        quantidade_enviada = rows[0]["quantidade_enviada"]
+        notas = [
+            {
+                "id_matricula": r["id_matricula"],
+                "estudante": r["estudante"],
+                "componente": r["componente"],
+                "disciplina": r["disciplina"],
+                "trimestre": r["trimestre"],
+                "valor": r["valor_bruta"],
+                "enviado_em": r["criado_em"],
+            }
+            for r in rows
+            if r["id_matricula"] is not None
+        ]
+        return jsonify(
+            {
+                "lote_id": lote_id,
+                "status_lote": status_lote,
+                "quantidade_enviada": quantidade_enviada,
+                "notas": notas,
+            }
+        ), 200
+
+    # ------------------------------------------------------------------
+    # Exemplos de uso (curl):
+    #
+    # Gerar LUMNI_API_KEY:
+    #   python -c "import secrets; print(secrets.token_urlsafe(32))"
+    #   → adicionar como variável de ambiente no serviço madan-etl-ischolar no Railway
+    #
+    # Health (público):
+    #   curl https://<host>/api/v1/health
+    #
+    # Notas de um aluno:
+    #   curl -H "Authorization: Bearer $LUMNI_API_KEY" \
+    #        "https://<host>/api/v1/notas/aluno/1234"
+    #   curl -H "Authorization: Bearer $LUMNI_API_KEY" \
+    #        "https://<host>/api/v1/notas/aluno/1234?trimestre=T1&componente=AV1"
+    #
+    # Notas de uma turma/disciplina:
+    #   curl -H "Authorization: Bearer $LUMNI_API_KEY" \
+    #        "https://<host>/api/v1/notas/turma/42"
+    #   curl -H "Authorization: Bearer $LUMNI_API_KEY" \
+    #        "https://<host>/api/v1/notas/turma/42?trimestre=T2"
+    #
+    # Notas de um lote:
+    #   curl -H "Authorization: Bearer $LUMNI_API_KEY" \
+    #        "https://<host>/api/v1/notas/lote/<lote_id>"
+    # ------------------------------------------------------------------
 
     return app
 
