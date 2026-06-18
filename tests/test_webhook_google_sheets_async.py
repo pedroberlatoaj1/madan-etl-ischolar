@@ -77,6 +77,15 @@ def client(app):
     return app.test_client()
 
 
+@pytest.fixture(autouse=True)
+def _habilitar_worker_legacy_em_testes(monkeypatch):
+    # P0: em producao o Caminho A (modo_execucao="worker") e rejeitado por padrao.
+    # Os testes deste arquivo exercitam o caminho worker legado, entao reabilitamos
+    # explicitamente (equivale a ALLOW_WORKER_SEND=1 no Railway). O teste do
+    # comportamento desabilitado remove a flag localmente via monkeypatch.delenv.
+    monkeypatch.setenv("ALLOW_WORKER_SEND", "1")
+
+
 def _processar_validacao_pendente():
     job = claim_next_pending_job()
     assert job is not None
@@ -363,6 +372,27 @@ def test_post_aprovar_persiste_identidade_estruturada(client, app):
     assert resultado_envio.aprovador_email == "coord@example.com"
     assert resultado_envio.aprovador_origem == "google_apps_script_session"
     assert resultado_envio.aprovador_identity_strength == "medium"
+
+
+def test_post_aprovar_worker_desabilitado_por_padrao(client, app, monkeypatch):
+    # P0: sem ALLOW_WORKER_SEND, modo_execucao="worker" (Caminho A) e rejeitado (400).
+    monkeypatch.delenv("ALLOW_WORKER_SEND", raising=False)
+    client.post("/webhook/notas", json=_payload(), headers=_headers())
+    _processar_validacao_pendente()
+    validacao = ValidacaoLoteStore(app.config["VALIDACAO_LOTE_DB"]).carregar("lote-http")
+    assert validacao is not None
+
+    resp = client.post(
+        "/lote/lote-http/aprovar",
+        json={
+            "snapshot_hash": validacao.snapshot_hash,
+            "aprovador": "Gestor",
+            "modo_execucao": "worker",
+        },
+        headers=_headers(),
+    )
+    assert resp.status_code == 400
+    assert "desabilitado" in resp.get_json()["erro"].lower()
 
 
 def test_post_rejeita_antireplay_repetido(client):

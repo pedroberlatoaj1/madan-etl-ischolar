@@ -1010,6 +1010,19 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
                 raise ValueError("Campo 'aprovador' e obrigatorio.")
             if modo_execucao not in {"worker", "apps_script"}:
                 raise ValueError("Campo 'modo_execucao' deve ser 'worker' ou 'apps_script'.")
+            # P0 (seguranca): o Caminho A (modo_execucao="worker") resolve id_matricula
+            # via buscar_aluno por RA GLOBAL e pode gravar nota em aluno de outra
+            # modalidade (Pre-Vestibular). Desabilitado por padrao: o envio oficial sai
+            # pelo Apps Script (turma-scoped). Escape hatch reversivel via env
+            # ALLOW_WORKER_SEND=1 no Railway, sem remover o codigo do caminho.
+            if (
+                modo_execucao == "worker"
+                and os.getenv("ALLOW_WORKER_SEND", "").strip().lower() not in {"1", "true", "yes"}
+            ):
+                raise ValueError(
+                    "modo_execucao='worker' (Caminho A) esta desabilitado por seguranca. "
+                    "Use 'apps_script'. Para reabilitar temporariamente defina ALLOW_WORKER_SEND=1."
+                )
         except ValueError as exc:
             return _json_erro(str(exc), 400, codigo="payload_invalido", request_id=request_id)
 
