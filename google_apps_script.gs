@@ -67,14 +67,17 @@ const PROP_ALERTA_TOKEN_ISCHOLAR_DIA = "etl_ischolar_token_alerta_dia";
 const TRIGGER_VERIFICACAO_TOKEN_ISCHOLAR = "verificarTokenIScholar_";
 
 function onOpen() {
+  // P0 (seguranca): o Caminho A (envio in-process pela VPS, resolucao de matricula
+  // por buscar_aluno/RA global) foi REMOVIDO do menu — resolvia globalmente e podia
+  // gravar nota em aluno de outra modalidade. Os rotulos abaixo agora apontam para o
+  // fluxo Apps Script (turma-scoped, correto). As funcoes worker
+  // menuAprovarEEnviar/menuSimularDryRun seguem no arquivo apenas como legado e NAO
+  // devem voltar ao menu.
   SpreadsheetApp.getUi()
     .createMenu("iScholar ETL")
     .addItem("Validar Lote", "menuValidarLote")
-    .addItem("Aprovar e Enviar", "menuAprovarEEnviar")
-    .addItem("Simular (Dry Run)", "menuSimularDryRun")
-    .addSeparator()
-    .addItem("Simular via Apps Script", "menuSimularViaAppsScript")
-    .addItem("Aprovar e Enviar (Apps Script)", "menuAprovarEEnviarViaAppsScript")
+    .addItem("Simular (Dry Run)", "menuSimularViaAppsScript")
+    .addItem("Aprovar e Enviar", "menuAprovarEEnviarViaAppsScript")
     .addSeparator()
     .addItem("Mostrar Ultimo Status", "menuMostrarUltimoStatus")
     .addItem("Limpar Estado Local", "menuLimparEstadoLocal")
@@ -138,6 +141,9 @@ function executarFluxoValidacao_() {
   });
 }
 
+// LEGADO / DESABILITADO (P0): Caminho A (envio in-process pela VPS via worker).
+// Removidas do menu (ver onOpen) e o backend rejeita modo_execucao="worker" por
+// padrao (requer ALLOW_WORKER_SEND=1). Mantidas apenas para referencia historica.
 function menuAprovarEEnviar() {
   executarFluxoAprovacao_(false);
 }
