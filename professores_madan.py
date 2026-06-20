@@ -305,10 +305,12 @@ PROFESSORES: list[ProfessorMadan] = [
         email="lenicecoelho1987@gmail.com",
     ),
     ProfessorMadan(
-        nome="LEONARDO MONTE PIMENTEL", apelido="LEO", materia_sigla="QUÍ",
-        turmas_1a=["A"], turmas_2a=["A"], turmas_3a=["F1"], frentes_med=["F1"],
-        frentes_ext=["F1"], frentes_ita=[],
-        email="profleonardopimentel@gmail.com",
+        # 2026-06-19: Caroline (id_professor 92) substitui Leonardo (51, INATIVO) em Quimica (1o/2o ano).
+        # 3a serie (F1) removida: usuario informou apenas 1o/2o ano e o ETL nao envia 3a serie.
+        nome="CAROLINE DO ROSÁRIO NASCIMENTO", apelido="Caroline", materia_sigla="QUÍ",
+        turmas_1a=["A"], turmas_2a=["A"], turmas_3a=[], frentes_med=[],
+        frentes_ext=[], frentes_ita=[],
+        email=None,
     ),
     ProfessorMadan(
         nome="LUAN MENDES SCHUNCK", apelido=None, materia_sigla="MAT",
@@ -323,10 +325,11 @@ PROFESSORES: list[ProfessorMadan] = [
         email="lucasbarroses@gmail.com",
     ),
     ProfessorMadan(
-        nome="MARCELO ALMEIDA MORETO", apelido="Moreto", materia_sigla="GEO",
+        # 2026-06-19: Emerson (id_professor 238) substitui Moreto (165, INATIVO) em Geografia (1o/2o ano).
+        nome="EMERSON EVARISTO DA SILVA", apelido="Emerson", materia_sigla="GEO",
         turmas_1a=["A"], turmas_2a=["B"], turmas_3a=[], frentes_med=[],
         frentes_ext=[], frentes_ita=[],
-        email="moretogeo@gmail.com",
+        email=None,
     ),
     ProfessorMadan(
         nome="MARINA LIMA MONTEIRO", apelido=None, materia_sigla="LIT",
