@@ -144,6 +144,53 @@ CREATE INDEX IF NOT EXISTS idx_envio_lote_audit_criado_em
 
 
 -- ---------------------------------------------------------------------------
+-- 5b. API Lumni (webhook_google_sheets.py) — camada de leitura
+-- ---------------------------------------------------------------------------
+
+-- Índices parciais para as consultas da API Lumni (por aluno e por disciplina).
+-- Parciais de propósito: indexam apenas o subconjunto de notas confirmadas
+-- (status='enviado' AND dry_run=0), que é exatamente o que a API lê.
+CREATE INDEX IF NOT EXISTS idx_envio_lote_audit_lumni_matricula
+    ON envio_lote_audit (id_matricula)
+    WHERE status = 'enviado' AND dry_run = 0;
+
+CREATE INDEX IF NOT EXISTS idx_envio_lote_audit_lumni_disciplina
+    ON envio_lote_audit (id_disciplina)
+    WHERE status = 'enviado' AND dry_run = 0;
+
+-- vw_notas_confirmadas: fonte de leitura dos endpoints /api/v1/notas/aluno e
+-- /api/v1/notas/disciplina. Encapsula em um único lugar a definição de
+-- "nota confirmada" (status='enviado' AND dry_run=0) e o dedup "latest-wins":
+-- quando uma nota é corrigida e reenviada em um lote posterior, vale a linha
+-- de maior criado_em (desempate por id para reenvios no mesmo segundo).
+--
+-- Sobre a ordenação por criado_em (TEXT): a ordenação lexicográfica é segura
+-- porque o campo é gravado EXCLUSIVAMENTE pelo próprio Postgres, no formato
+-- fixo to_char(now() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"') — ver
+-- o DEFAULT da coluna acima e envio_lote_audit_store._UPSERT (único escritor).
+-- Formato constante + sempre UTC + precisão de segundos ⇒ ordem lexicográfica
+-- coincide com a cronológica. Recomendação futura: migrar a coluna para
+-- TIMESTAMPTZ quando houver janela de manutenção (não executar a quente).
+CREATE OR REPLACE VIEW vw_notas_confirmadas AS
+SELECT DISTINCT ON (id_matricula, id_disciplina, trimestre, componente)
+    id_matricula,
+    estudante,
+    id_disciplina,
+    disciplina,
+    trimestre,
+    componente,
+    valor_bruta,
+    id_avaliacao,
+    lote_id,
+    criado_em
+FROM envio_lote_audit
+WHERE status = 'enviado'
+  AND dry_run = 0
+ORDER BY id_matricula, id_disciplina, trimestre, componente,
+         criado_em DESC, id DESC;
+
+
+-- ---------------------------------------------------------------------------
 -- 6. resultados_envio_lote (resultado_envio_lote_store.py)
 -- ---------------------------------------------------------------------------
 
