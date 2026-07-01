@@ -90,8 +90,19 @@ def parsear_coluna_dinamica(nome_coluna: str) -> ColunaDinamica | None:
         Novo:   "{Disciplina} - {Professor} (Frente {X}) - {Tipo}"
 
     Retorna ColunaDinamica ou None se não bater no padrão.
+
+    Tolerante a ruído de espaçamento no cabeçalho: quebras de linha, tabs e
+    espaços múltiplos são colapsados em um único espaço antes do matching.
+    Cabeçalhos editados à mão no Google Sheets às vezes vêm com uma quebra de
+    linha embutida (ex.: "Geografia - Emerson <quebra>(Frente A) - AV 1 Obj");
+    sem essa normalização a coluna não parseava e a nota era descartada em
+    silêncio.
     """
-    nome = str(nome_coluna).strip()
+    # Colapsa espaçamento (inclui \n, \r, \t e espaços múltiplos) em 1 espaço.
+    # IMPORTANTE: NÃO usar este valor em `coluna_original` abaixo — ela precisa
+    # manter o texto CRU para casar com as chaves do dict da linha (que chegam
+    # com o \n) no lookup do valor em despivotar_linha_wide.
+    nome = re.sub(r"\s+", " ", str(nome_coluna)).strip()
     m = REGEX_COLUNA_DINAMICA.match(nome)
     if not m:
         return None
