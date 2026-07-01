@@ -68,6 +68,55 @@ class TestParsearColunaDinamica:
         assert r is not None
         assert r.tipo_avaliacao == "Recuperação Final"
 
+    # --- Tolerância a ruído de espaçamento (quebra de linha / espaços) -------
+    # Regressão: cabeçalho editado à mão no Google Sheets vinha com um \n
+    # embutido ("Geografia - Emerson \n(Frente A) - AV 1 Obj"), o parser
+    # retornava None e a nota era descartada em silêncio.
+
+    def test_quebra_de_linha_no_cabecalho_geografia(self):
+        r = parsear_coluna_dinamica("Geografia - Emerson \n(Frente A) - AV 1 Obj")
+        assert r is not None
+        assert r.disciplina == "Geografia"
+        assert r.professor == "Emerson"
+        assert r.frente == "Frente A"
+        assert r.tipo_avaliacao == "AV 1 Obj"
+
+    def test_quebra_de_linha_no_cabecalho_quimica(self):
+        r = parsear_coluna_dinamica("Química - Caroline\n(Frente A) - AV 1 Disc")
+        assert r is not None
+        assert r.disciplina == "Química"
+        assert r.professor == "Caroline"
+        assert r.frente == "Frente A"
+        assert r.tipo_avaliacao == "AV 1 Disc"
+
+    def test_espacos_multiplos_e_tab(self):
+        r = parsear_coluna_dinamica("Matemática  -\tDaniel  (Frente A)  -  AV 2 Obj")
+        assert r is not None
+        assert r.disciplina == "Matemática"
+        assert r.professor == "Daniel"
+        assert r.frente == "Frente A"
+        assert r.tipo_avaliacao == "AV 2 Obj"
+
+    def test_coluna_original_preserva_texto_cru(self):
+        # coluna_original DEVE manter o cru (com \n) — é a chave usada para
+        # buscar o valor na linha; se normalizar aqui, o lookup quebra.
+        raw = "Geografia - Emerson \n(Frente A) - AV 1 Obj"
+        r = parsear_coluna_dinamica(raw)
+        assert r is not None
+        assert r.coluna_original == raw
+
+    def test_despivot_com_quebra_de_linha_mapeia_a_nota(self):
+        # Ponta a ponta: com \n no cabeçalho, a nota tem de ser despivotada.
+        col = "Geografia - Emerson \n(Frente A) - AV 1 Obj"
+        fixas, grupos = _classificar_colunas(
+            ["Estudante", "RA", "Turma", "Trimestre", col]
+        )
+        row = {"Estudante": "X", "RA": "9", "Turma": "1B", "Trimestre": "T2", col: 7.5}
+        virtuais = despivotar_linha_wide(row, fixas, grupos)
+        assert len(virtuais) == 1
+        assert virtuais[0]["Disciplina"] == "Geografia"
+        assert virtuais[0]["AV 1 (OBJ)"] == 7.5
+
     def test_coluna_fixa_retorna_none(self):
         assert parsear_coluna_dinamica("Estudante") is None
         assert parsear_coluna_dinamica("RA") is None
