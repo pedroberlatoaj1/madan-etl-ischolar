@@ -609,3 +609,40 @@ def test_plano_b_sheet_name_vazio_retorna_400(client):
     payload["sheet_name"] = "   "
     resp = client.post("/webhook/notas", json=payload, headers=_headers())
     assert resp.status_code == 400
+
+
+def _payload_wide(lote_id: str = "lote-wide") -> dict[str, Any]:
+    return {
+        "spreadsheet_id": "spreadsheet-123",
+        "sheet_name": "1A_T2",
+        "lote_id": lote_id,
+        "dados": [
+            {
+                "Estudante": "Ana Silva",
+                "RA": "RA001",
+                "Turma": "1A",
+                "Trimestre": "2",
+                "Matemática - Daniel (Frente A) - AV 1 Obj": "4",
+                "Matemática - Daniel (Frente A) - AV 1 Disc": "4",
+                "Matemática - Daniel (Frente A) - Simulado": "9",
+            }
+        ],
+    }
+
+
+def test_get_validacao_wide_inclui_relatorio_colunas(client, app):
+    resp = client.post("/webhook/notas", json=_payload_wide(), headers=_headers())
+    assert resp.status_code == 202
+
+    _processar_validacao_pendente()
+
+    resp_validacao = client.get("/lote/lote-wide/validacao", headers=_headers())
+    assert resp_validacao.status_code == 200
+    body = resp_validacao.get_json()
+    assert body["status"] == STATUS_VALIDATION_PENDING_APPROVAL
+
+    rel = body["resumo"]["relatorio_colunas"]
+    assert rel is not None
+    assert rel["total_colunas"] > 0
+    assert rel["total_fixas"] == 4
+    assert rel["total_nao_reconhecidas"] == 0

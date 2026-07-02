@@ -372,3 +372,162 @@ def test_runner_permite_retomada_de_retry_transitorio_no_mesmo_snapshot():
     )
 
     assert resultado["status"] == STATUS_DRY_RUN_COMPLETED
+
+
+# ---------------------------------------------------------------------------
+# Gate de completude de colunas (formato wide novo)
+#
+# Usa um store fake em memória: os stores reais são PostgreSQL (DATABASE_URL
+# só existe no Railway) e o gate não depende do backend de persistência.
+# ---------------------------------------------------------------------------
+
+class FakeValidacaoLoteStore:
+    """Substitui ValidacaoLoteStore com round-trip JSON (mimetiza _json_dumps)."""
+
+    def __init__(self) -> None:
+        self._dados: dict[str, Any] = {}
+
+    def salvar(self, resultado):
+        import json as _json
+        from dataclasses import asdict as _asdict
+
+        from validacao_lote_store import ResultadoValidacaoPersistido
+
+        registro = _json.loads(_json.dumps(_asdict(resultado), default=str))
+        self._dados[resultado.lote_id] = registro
+        return ResultadoValidacaoPersistido(**registro)
+
+    def carregar(self, lote_id: str):
+        from validacao_lote_store import ResultadoValidacaoPersistido
+
+        registro = self._dados.get(lote_id)
+        if registro is None:
+            return None
+        return ResultadoValidacaoPersistido(**registro)
+
+
+def _df_wide_valido(colunas_extras: dict | None = None) -> pd.DataFrame:
+    dados = {
+        "Estudante": ["Ana Silva"],
+        "RA": ["RA001"],
+        "Turma": ["2A"],
+        "Trimestre": ["1"],
+        "Matemática - Daniel (Frente A) - AV 1 Obj": ["4"],
+        "Matemática - Daniel (Frente A) - AV 1 Disc": ["4"],
+        "Matemática - Daniel (Frente A) - Simulado": ["9"],
+    }
+    if colunas_extras:
+        dados.update(colunas_extras)
+    return pd.DataFrame(dados)
+
+
+def _mapa_prof_tmp(tmp_path, professores: dict) -> str:
+    import json
+
+    caminho = tmp_path / "mapa_professores_teste.json"
+    caminho.write_text(
+        json.dumps({"_schema": "mapa_professores_v1", "professores": professores}),
+        encoding="utf-8",
+    )
+    return str(caminho)
+
+
+def test_executar_validacao_wide_coluna_nao_reconhecida_gera_aviso_sem_bloquear(tmp_path):
+    validation_store = FakeValidacaoLoteStore()
+    # Cabeçalho com travessão (em-dash) não parseia: a classe do incidente.
+    df = _df_wide_valido({"Química — Caroline (Frente A) — AV 1 Obj": ["7"]})
+
+    resultado = executar_validacao(
+        lote_id="lote-gate-aviso",
+        entrada=df,
+        validation_store=validation_store,
+        mapa_professores=_mapa_prof_tmp(tmp_path, {"matematica a - daniel": 66}),
+    )
+
+    # Default não bloqueante (decisão operacional): lote segue apto.
+    assert resultado["status"] == STATUS_VALIDATION_PENDING_APPROVAL
+    assert resultado["apto_para_aprovacao"] is True
+
+    avisos_gate = [
+        a for a in resultado["avisos"]
+        if a.get("code") == "COLUNA_NAO_RECONHECIDA_COM_NOTAS"
+    ]
+    assert len(avisos_gate) == 1
+    assert avisos_gate[0]["details"]["origem"] == "gate_colunas"
+    assert avisos_gate[0]["details"]["celulas_com_valor"] == 1
+
+    rel = resultado["resumo"]["relatorio_colunas"]
+    assert rel is not None
+    assert rel["total_nao_reconhecidas_com_valor"] == 1
+    assert rel["celulas_com_valor_descartaveis"] == 1
+
+
+def test_executar_validacao_wide_gate_bloqueante_quando_configurado(tmp_path, monkeypatch):
+    from config import config as _config
+
+    monkeypatch.setattr(_config, "GATE_COLUNA_NAO_RECONHECIDA_BLOQUEANTE", True)
+
+    validation_store = FakeValidacaoLoteStore()
+    approval_store, itens_store, audit_store = None, None, None
+    df = _df_wide_valido({"Química — Caroline (Frente A) — AV 1 Obj": ["7"]})
+
+    resultado = executar_validacao(
+        lote_id="lote-gate-bloqueio",
+        entrada=df,
+        validation_store=validation_store,
+        mapa_professores=_mapa_prof_tmp(tmp_path, {"matematica a - daniel": 66}),
+    )
+
+    assert resultado["status"] == STATUS_VALIDATION_FAILED
+    assert resultado["apto_para_aprovacao"] is False
+    assert resultado["resumo"]["status_sugerido"] == "bloqueado_por_erros"
+    assert any("Gate de completude" in m for m in resultado["resumo"]["motivos_status"])
+
+    with pytest.raises(LoteNaoElegivelError):
+        executar_aprovacao_e_envio(
+            lote_id="lote-gate-bloqueio",
+            aprovado_por="Gestor",
+            validation_store=validation_store,
+            approval_store=approval_store,
+            itens_store=itens_store,
+            audit_store=audit_store,
+            cliente=FakeClient(),
+            resolvedor=ResolvedorFixo(),
+        )
+
+
+def test_executar_validacao_wide_professor_sem_mapeamento_nao_bloqueia(tmp_path):
+    validation_store = FakeValidacaoLoteStore()
+    df = _df_wide_valido({
+        "Geografia - Emerson (Frente A) - AV 1 Obj": ["3"],
+        "Geografia - Emerson (Frente A) - AV 1 Disc": ["3"],
+    })
+
+    resultado = executar_validacao(
+        lote_id="lote-gate-prof",
+        entrada=df,
+        validation_store=validation_store,
+        mapa_professores=_mapa_prof_tmp(tmp_path, {"matematica a - daniel": 66}),
+    )
+
+    assert resultado["apto_para_aprovacao"] is True
+    pendencias_gate = [
+        p for p in resultado["pendencias"]
+        if p.get("code") == "COLUNA_PROFESSOR_SEM_MAPEAMENTO"
+    ]
+    assert len(pendencias_gate) == 2  # AV 1 Obj + AV 1 Disc
+    assert all(p["bloqueante"] is False for p in pendencias_gate)
+    assert resultado["resumo"]["relatorio_colunas"]["total_dinamicas_sem_professor"] == 2
+
+
+def test_executar_validacao_formato_legado_sem_relatorio():
+    validation_store = FakeValidacaoLoteStore()
+
+    resultado = executar_validacao(
+        lote_id="lote-gate-legado",
+        entrada=_df_valido(),
+        validation_store=validation_store,
+    )
+
+    assert resultado["status"] == STATUS_VALIDATION_PENDING_APPROVAL
+    assert resultado["resumo"]["relatorio_colunas"] is None
