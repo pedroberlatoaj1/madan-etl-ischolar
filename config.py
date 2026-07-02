@@ -73,6 +73,16 @@ class Config:
         default_factory=lambda: ["estudante", "disciplina", "turma", "trimestre"]
     )
 
+    # --- Gate de completude de colunas (validação wide novo) ---
+    # Coluna não reconhecida COM notas: aviso por padrão; True → erro bloqueante.
+    GATE_COLUNA_NAO_RECONHECIDA_BLOQUEANTE: bool = os.getenv(
+        "GATE_COLUNA_NAO_RECONHECIDA_BLOQUEANTE", "false"
+    ).lower() in ("1", "true", "yes")
+    # Coluna com professor sem mapeamento: pendência não bloqueante por padrão.
+    GATE_PROFESSOR_SEM_MAPEAMENTO_BLOQUEANTE: bool = os.getenv(
+        "GATE_PROFESSOR_SEM_MAPEAMENTO_BLOQUEANTE", "false"
+    ).lower() in ("1", "true", "yes")
+
     # --- Worker: recuperação de jobs stale ---
     PROCESSING_STALE_SECONDS: int = 300  # 5 minutos
     STALE_MAX_RETRIES: int = int(os.getenv("STALE_MAX_RETRIES", "3"))
