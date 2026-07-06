@@ -12,7 +12,7 @@ from __future__ import annotations
 import os
 import json
 import re
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
@@ -34,6 +34,12 @@ from aprovacao_lote import (
     gerar_resumo_lote,
 )
 from aprovacao_lote_store import AprovacaoLoteStore
+from completude_colunas import (
+    RelatorioColunas,
+    avaliar_gate_completude,
+    gerar_relatorio_colunas,
+)
+from config import config
 from envio_lote import ResultadoEnvioLote, ResolvedorIDsAbstrato, enviar_lote
 from envio_lote import ResultadoItemEnvio, _compute_item_key
 from envio_lote_audit_store import EnvioLoteAuditStore
@@ -1341,21 +1347,83 @@ def executar_validacao(
     versao: int = 1,
     expires_at: Optional[str] = None,
     sheet_name: Optional[str] = None,
+    mapa_professores: Optional[str] = None,
 ) -> dict[str, Any]:
     df_original = carregar_entrada(entrada, sheet_name=sheet_name)
     snapshot_hash_final = snapshot_hash or _calcular_snapshot_hash(df_original)
     df_pipeline, formato = preparar_dataframe_pipeline(df_original)
+
+    # Gate de completude: veredito por coluna do formato wide novo, gerado do
+    # df ORIGINAL (os cabeçalhos wide se perdem no despivotamento).
+    relatorio_colunas: Optional[RelatorioColunas] = None
+    if formato == FORMATO_WIDE_NOVO:
+        caminho_prof = mapa_professores
+        if caminho_prof is None and Path(DEFAULT_MAPA_PROF).exists():
+            caminho_prof = DEFAULT_MAPA_PROF
+        mapa_prof_dict = None
+        if caminho_prof:
+            try:
+                mapa_prof_dict = carregar_mapa_professores(caminho_prof)
+            except Exception as exc:
+                log.warning(
+                    "Gate de colunas: falha ao carregar mapa_professores (%s); "
+                    "verificacao de professor por coluna desativada.",
+                    exc,
+                )
+        relatorio_colunas = gerar_relatorio_colunas(
+            df_original, mapa_professores=mapa_prof_dict
+        )
+
     resultados_validacao = processar_validacao(df_pipeline)
     resumo = gerar_resumo_lote(resultados_validacao)
+
+    issues_gate = []
+    if relatorio_colunas is not None:
+        issues_gate = avaliar_gate_completude(
+            relatorio_colunas,
+            coluna_nao_reconhecida_bloqueante=config.GATE_COLUNA_NAO_RECONHECIDA_BLOQUEANTE,
+            professor_sem_mapeamento_bloqueante=config.GATE_PROFESSOR_SEM_MAPEAMENTO_BLOQUEANTE,
+        )
+        gate_bloqueia = any(
+            i.severity == "erro" or (i.severity == "pendencia" and i.bloqueante)
+            for i in issues_gate
+        )
+        if gate_bloqueia:
+            resumo = replace(
+                resumo,
+                status_sugerido="bloqueado_por_erros",
+                motivos_status=list(resumo.motivos_status)
+                + [
+                    "Gate de completude: "
+                    f"{relatorio_colunas.total_nao_reconhecidas_com_valor} coluna(s) "
+                    "nao reconhecida(s) com notas seriam descartadas e/ou coluna(s) "
+                    "com professor sem mapeamento (modo bloqueante ativo)."
+                ],
+            )
+
     apto_para_aprovacao = bool(
         avaliar_lote_para_aprovacao(resumo)["elegivel_para_aprovacao"]
     )
     avisos, erros, pendencias = _agregar_issues(resultados_validacao)
+    for issue in issues_gate:
+        item = dict(issue.__dict__)
+        item.setdefault("origem", "gate_colunas")
+        if issue.severity == "erro":
+            erros.append(item)
+        elif issue.severity == "pendencia":
+            pendencias.append(item)
+        else:
+            avisos.append(item)
     itens_sendaveis = extrair_itens_sendaveis(resultados_validacao)
     status = (
         STATUS_VALIDATION_PENDING_APPROVAL
         if apto_para_aprovacao
         else STATUS_VALIDATION_FAILED
+    )
+
+    resumo_dict = _resumo_to_dict(resumo)
+    resumo_dict["relatorio_colunas"] = (
+        relatorio_colunas.to_dict() if relatorio_colunas is not None else None
     )
 
     persistido = validation_store.salvar(
@@ -1364,7 +1432,7 @@ def executar_validacao(
             job_id=job_id,
             snapshot_hash=snapshot_hash_final,
             status=status,
-            resumo=_resumo_to_dict(resumo),
+            resumo=resumo_dict,
             avisos=avisos,
             erros=erros,
             pendencias=pendencias,

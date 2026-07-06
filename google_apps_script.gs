@@ -1372,6 +1372,8 @@ function montarTextoValidacao_(validacao) {
     linhas.push("- Erros: " + valorOuZero_(resumo.total_erros));
   }
 
+  anexarResumoColunas_(linhas, resumo);
+
   anexarListaLimitada_(linhas, "Avisos", validacao.avisos, 8);
   anexarListaLimitada_(linhas, "Pendencias", validacao.pendencias, 8);
   anexarListaLimitada_(linhas, "Erros", validacao.erros, 8);
@@ -1434,6 +1436,52 @@ function montarTextoJob_(job) {
   ].filter(function(item) { return !!item; }).join("\n");
 }
 
+function anexarResumoColunas_(linhas, resumo) {
+  // Gate de completude: veredito por coluna do formato wide novo (null no legado).
+  var rel = resumo && resumo.relatorio_colunas;
+  if (!rel || !rel.colunas || !rel.colunas.length) {
+    return;
+  }
+
+  linhas.push("");
+  linhas.push(
+    "Colunas da planilha: " + valorOuZero_(rel.total_colunas) +
+    " (fixas: " + valorOuZero_(rel.total_fixas) +
+    " | ok: " + valorOuZero_(rel.total_dinamicas_ok) +
+    " | sem professor: " + valorOuZero_(rel.total_dinamicas_sem_professor) +
+    " | NAO reconhecidas: " + valorOuZero_(rel.total_nao_reconhecidas) + ")"
+  );
+
+  if (rel.celulas_com_valor_descartaveis > 0) {
+    linhas.push(
+      "!! ATENCAO: " + rel.celulas_com_valor_descartaveis +
+      " nota(s) em coluna(s) NAO reconhecida(s) seriam DESCARTADAS. " +
+      "Corrija o(s) cabecalho(s) antes de aprovar."
+    );
+  }
+  if (!rel.professor_verificado) {
+    linhas.push("(mapa de professores indisponivel - verificacao de professor nao executada)");
+  }
+
+  var problemas = [];
+  rel.colunas.forEach(function(c) {
+    if (c.categoria === "fixa_reconhecida" || c.categoria === "dinamica_ok") {
+      return;
+    }
+    problemas.push(
+      "[" + c.categoria + "] " + String(c.coluna || "").replace(/\s+/g, " ") +
+      (c.celulas_com_valor ? " (" + c.celulas_com_valor + " nota(s))" : " (vazia)") +
+      (c.motivo ? " -> " + c.motivo : "")
+    );
+  });
+  anexarListaLimitada_(linhas, "Colunas com problema", problemas, 8);
+
+  linhas.push(
+    "Conferencia: notas lidas=" + valorOuZero_(rel.celulas_com_valor_reconhecidas) +
+    " | lancamentos gerados=" + valorOuZero_(resumo.total_lancamentos)
+  );
+}
+
 function anexarListaLimitada_(linhas, titulo, itens, limite) {
   if (!itens || !itens.length) {
     return;
@@ -1464,7 +1512,7 @@ function formatarItemOperacional_(item) {
   if (item.componente) partes.push(item.componente);
   if (item.disciplina && !item.componente) partes.push(item.disciplina);
 
-  var mensagem = item.mensagem || item.erro || item.descricao || item.tipo || JSON.stringify(item);
+  var mensagem = item.mensagem || item.message || item.erro || item.descricao || item.tipo || JSON.stringify(item);
   if (partes.length) {
     return partes.join(" | ") + " -> " + mensagem;
   }
