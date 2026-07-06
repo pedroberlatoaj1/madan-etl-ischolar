@@ -554,6 +554,26 @@ def _validar_rate_limit() -> None:
     eventos.append(now)
 
 
+def _validar_rate_limit_lumni() -> None:
+    """Rate limit in-memory por IP para a API Lumni.
+
+    A API coabita o processo do webhook de lancamento: este limite protege os
+    workers contra polling agressivo do dashboard do parceiro. In-memory e
+    suficiente para o cenario atual (parceiro unico, processo unico no Railway);
+    cache separado do webhook para janelas independentes.
+    """
+    cache: dict[str, deque[float]] = current_app.config["_LUMNI_RATE_LIMIT_CACHE"]
+    now = time.time()
+    janela = float(current_app.config["LUMNI_RATE_LIMIT_WINDOW_SECONDS"])
+    limite = int(current_app.config["LUMNI_RATE_LIMIT_MAX_REQUESTS"])
+    eventos = cache.setdefault(_request_ip(), deque())
+    while eventos and (now - eventos[0]) > janela:
+        eventos.popleft()
+    if len(eventos) >= limite:
+        raise PermissionError("Limite de requisicoes da API Lumni excedido.")
+    eventos.append(now)
+
+
 def _cleanup_nonce_cache() -> None:
     cache: dict[str, int] = current_app.config["_NONCE_CACHE"]
     now = int(time.time())
@@ -647,8 +667,19 @@ def requer_autenticacao(f: Callable[..., Any]) -> Callable[..., Any]:
 def _requer_lumni_api_key(f: Callable[..., Any]) -> Callable[..., Any]:
     @wraps(f)
     def _decorado(*args: Any, **kwargs: Any):
-        chave = os.environ.get("LUMNI_API_KEY", "").strip()
-        if not chave:
+        # Rotacao de chave em duas fases (sem downtime para o Guru):
+        #   1) gerar chave nova e definir LUMNI_API_KEY_NEXT no Railway;
+        #   2) Guru migra para a chave nova (ambas validas neste periodo);
+        #   3) promover a nova para LUMNI_API_KEY e remover LUMNI_API_KEY_NEXT.
+        chaves = [
+            c
+            for c in (
+                os.environ.get("LUMNI_API_KEY", "").strip(),
+                os.environ.get("LUMNI_API_KEY_NEXT", "").strip(),
+            )
+            if c
+        ]
+        if not chaves:
             log.warning(
                 "LUMNI_API_KEY nao configurada — requisicao Lumni rejeitada | path=%s",
                 request.path,
@@ -658,13 +689,22 @@ def _requer_lumni_api_key(f: Callable[..., Any]) -> Callable[..., Any]:
         if not header.startswith("Bearer "):
             return jsonify({"error": "unauthorized"}), 401
         token = header[len("Bearer "):]
-        if not hmac.compare_digest(token, chave):
+        if not any(hmac.compare_digest(token, chave) for chave in chaves):
             log.warning(
                 "Token Lumni invalido | ip=%s | path=%s",
                 _request_ip(),
                 request.path,
             )
             return jsonify({"error": "unauthorized"}), 401
+        try:
+            _validar_rate_limit_lumni()
+        except PermissionError:
+            log.warning(
+                "Rate limit Lumni excedido | ip=%s | path=%s",
+                _request_ip(),
+                request.path,
+            )
+            return jsonify({"error": "rate_limited"}), 429
         return f(*args, **kwargs)
 
     return _decorado
@@ -810,6 +850,8 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
         MAX_ROWS_PER_REQUEST=int(os.getenv("WEBHOOK_MAX_ROWS", "2000")),
         RATE_LIMIT_WINDOW_SECONDS=int(os.getenv("WEBHOOK_RATE_LIMIT_WINDOW_SECONDS", "60")),
         RATE_LIMIT_MAX_REQUESTS=int(os.getenv("WEBHOOK_RATE_LIMIT_MAX_REQUESTS", "120")),
+        LUMNI_RATE_LIMIT_WINDOW_SECONDS=int(os.getenv("LUMNI_RATE_LIMIT_WINDOW_SECONDS", "60")),
+        LUMNI_RATE_LIMIT_MAX_REQUESTS=int(os.getenv("LUMNI_RATE_LIMIT_MAX_REQUESTS", "60")),
         VALIDACAO_LOTE_DB=os.getenv("VALIDACAO_LOTE_DB", "validacoes_lote.db"),
         APROVACAO_LOTE_DB=os.getenv("APROVACAO_LOTE_DB", "aprovacoes_lote.db"),
         LOTE_ITENS_DB=os.getenv("LOTE_ITENS_DB", "lote_itens.db"),
@@ -822,6 +864,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
         MAPA_TURMAS=os.getenv("MAPA_TURMAS", "mapa_turmas.json"),
         _NONCE_CACHE={},
         _RATE_LIMIT_CACHE={},
+        _LUMNI_RATE_LIMIT_CACHE={},
     )
     if config_overrides:
         app.config.update(config_overrides)
@@ -1267,27 +1310,58 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
 
     # ------------------------------------------------------------------
     # API Lumni — consulta de notas para o sistema de dashboards do Guru
+    #
+    # Fonte de leitura: VIEW vw_notas_confirmadas (schema.sql), que encapsula
+    # a definicao de "nota confirmada" (status='enviado' AND dry_run=0) e o
+    # dedup latest-wins por (id_matricula, id_disciplina, trimestre, componente).
+    # Excecao documentada: o endpoint de lote le envio_lote_audit direto (ver
+    # comentario em lumni_notas_lote).
+    #
+    # Contrato de vazio (uniforme nos 3 endpoints de dados):
+    #   • recurso inexistente / sem nenhuma nota confirmada → 404 not_found
+    #     (ja era o contrato do endpoint de aluno);
+    #   • pagina alem do fim de um recurso existente → 200 com notas=[] e
+    #     metadados de paginacao reais (nao e "not found", e paginacao valida).
     # ------------------------------------------------------------------
+
+    _LUMNI_PAGINA_LIMIT_DEFAULT = 100
+    _LUMNI_PAGINA_LIMIT_MAX = 500  # teto imposto pelo servidor
+
+    def _lumni_paginacao() -> tuple[int, int]:
+        """Le ?limit= e ?offset= com teto do servidor. ValueError se invalidos."""
+        limit_raw = request.args.get("limit", "").strip()
+        offset_raw = request.args.get("offset", "").strip()
+        limit = int(limit_raw) if limit_raw else _LUMNI_PAGINA_LIMIT_DEFAULT
+        offset = int(offset_raw) if offset_raw else 0
+        if limit < 1 or offset < 0:
+            raise ValueError("Paginacao invalida.")
+        return min(limit, _LUMNI_PAGINA_LIMIT_MAX), offset
+
+    def _lumni_valor_nota(valor: Any) -> Optional[float]:
+        # valor_bruta e REAL (float4): arredondar a 1 casa na serializacao
+        # evita artefatos de float no JSON (ex.: 7.3 → 7.300000190734863).
+        # Recomendacao futura: migrar a coluna para NUMERIC(4,2) e remover
+        # este arredondamento (nao executar a migracao a quente).
+        return None if valor is None else round(float(valor), 1)
 
     @app.get("/api/v1/health")
     def lumni_health():
-        return jsonify({"status": "ok", "api": "lumni-notas", "versao": "1.0"}), 200
+        return jsonify({"status": "ok", "api": "lumni-notas", "versao": "1.1"}), 200
 
     @app.get("/api/v1/notas/aluno/<int:id_matricula>")
     @_requer_lumni_api_key
     def lumni_notas_aluno(id_matricula: int):
+        # Sem paginacao: o volume por aluno e limitado por construcao
+        # (disciplinas × componentes × trimestres ≈ dezenas de linhas).
         trimestre = request.args.get("trimestre", "").strip() or None
         disciplina = request.args.get("disciplina", "").strip() or None
         componente = request.args.get("componente", "").strip() or None
 
         sql = """
-            SELECT DISTINCT ON (disciplina, trimestre, componente)
-                componente, disciplina, trimestre,
-                valor_bruta, criado_em, lote_id, id_disciplina, id_avaliacao, estudante
-            FROM envio_lote_audit
+            SELECT componente, disciplina, trimestre,
+                   valor_bruta, criado_em, lote_id, id_disciplina, id_avaliacao, estudante
+            FROM vw_notas_confirmadas
             WHERE id_matricula = %s
-              AND status = 'enviado'
-              AND dry_run = 0
         """
         params: list[Any] = [id_matricula]
 
@@ -1301,7 +1375,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
             sql += " AND componente = %s"
             params.append(componente)
 
-        sql += " ORDER BY disciplina, trimestre, componente, criado_em DESC"
+        sql += " ORDER BY disciplina, trimestre, componente"
 
         try:
             with get_connection() as conn:
@@ -1321,7 +1395,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
                 "componente": r["componente"],
                 "disciplina": r["disciplina"],
                 "trimestre": r["trimestre"],
-                "valor": r["valor_bruta"],
+                "valor": _lumni_valor_nota(r["valor_bruta"]),
                 "enviado_em": r["criado_em"],
                 "lote_id": r["lote_id"],
                 "id_disciplina": r["id_disciplina"],
@@ -1338,49 +1412,63 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
             }
         ), 200
 
-    @app.get("/api/v1/notas/turma/<int:id_disciplina>")
-    @_requer_lumni_api_key
-    def lumni_notas_turma(id_disciplina: int):
+    def _lumni_consultar_notas_disciplina(id_disciplina: int):
         trimestre = request.args.get("trimestre", "").strip() or None
         componente = request.args.get("componente", "").strip() or None
+        try:
+            limit, offset = _lumni_paginacao()
+        except ValueError:
+            return jsonify({"error": "invalid_pagination"}), 400
 
-        sql = """
-            SELECT id_matricula, estudante, componente, trimestre,
-                   disciplina, valor_bruta, criado_em
-            FROM envio_lote_audit
-            WHERE id_disciplina = %s
-              AND status = 'enviado'
-              AND dry_run = 0
-        """
+        where = " WHERE id_disciplina = %s"
         params: list[Any] = [id_disciplina]
-
         if trimestre:
-            sql += " AND trimestre = %s"
+            where += " AND trimestre = %s"
             params.append(trimestre)
         if componente:
-            sql += " AND componente = %s"
+            where += " AND componente = %s"
             params.append(componente)
 
-        sql += " ORDER BY id_matricula, trimestre, componente"
+        # Duas consultas baratas (indice parcial idx_..._lumni_disciplina):
+        # agregados sobre o conjunto filtrado completo + pagina solicitada.
+        sql_total = (
+            "SELECT COUNT(*) AS total_notas,"
+            "       COUNT(DISTINCT id_matricula) AS total_alunos,"
+            "       MAX(disciplina) AS disciplina"
+            "  FROM vw_notas_confirmadas" + where
+        )
+        sql_pagina = (
+            "SELECT id_matricula, estudante, componente, trimestre,"
+            "       disciplina, valor_bruta, criado_em"
+            "  FROM vw_notas_confirmadas" + where +
+            " ORDER BY id_matricula, trimestre, componente"
+            " LIMIT %s OFFSET %s"
+        )
 
         try:
             with get_connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(sql, params)
+                    cur.execute(sql_total, params)
+                    agregado = cur.fetchone()
+                    cur.execute(sql_pagina, params + [limit, offset])
                     rows = cur.fetchall()
         except Exception:
-            log.exception("Erro ao consultar notas da turma | id_disciplina=%s", id_disciplina)
+            log.exception(
+                "Erro ao consultar notas da disciplina | id_disciplina=%s", id_disciplina
+            )
             return jsonify({"error": "internal_server_error"}), 500
 
-        nome_disciplina = rows[0]["disciplina"] if rows else None
-        total_alunos = len({r["id_matricula"] for r in rows})
+        total_notas = int(agregado["total_notas"] or 0)
+        if total_notas == 0:
+            return jsonify({"error": "not_found"}), 404
+
         notas = [
             {
                 "id_matricula": r["id_matricula"],
                 "estudante": r["estudante"],
                 "componente": r["componente"],
                 "trimestre": r["trimestre"],
-                "valor": r["valor_bruta"],
+                "valor": _lumni_valor_nota(r["valor_bruta"]),
                 "enviado_em": r["criado_em"],
             }
             for r in rows
@@ -1388,46 +1476,82 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
         return jsonify(
             {
                 "id_disciplina": id_disciplina,
-                "disciplina": nome_disciplina,
-                "total_alunos": total_alunos,
-                "total_notas": len(notas),
+                "disciplina": agregado["disciplina"],
+                "total_alunos": int(agregado["total_alunos"] or 0),
+                "total_notas": total_notas,
+                "paginacao": {"limit": limit, "offset": offset, "total": total_notas},
                 "notas": notas,
             }
         ), 200
 
+    @app.get("/api/v1/notas/disciplina/<int:id_disciplina>")
+    @_requer_lumni_api_key
+    def lumni_notas_disciplina(id_disciplina: int):
+        return _lumni_consultar_notas_disciplina(id_disciplina)
+
+    # DEPRECATED: alias mantido por compatibilidade com o Guru. A chave real
+    # sempre foi id_disciplina (nao turma) — usar /api/v1/notas/disciplina/.
+    # Remover este alias apos o Lumni migrar.
+    @app.get("/api/v1/notas/turma/<int:id_disciplina>")
+    @_requer_lumni_api_key
+    def lumni_notas_turma(id_disciplina: int):
+        return _lumni_consultar_notas_disciplina(id_disciplina)
+
     @app.get("/api/v1/notas/lote/<path:lote_id>")
     @_requer_lumni_api_key
     def lumni_notas_lote(lote_id: str):
-        sql = """
-            SELECT r.status          AS status_lote,
-                   r.quantidade_enviada,
-                   a.id_matricula,
-                   a.estudante,
-                   a.componente,
-                   a.disciplina,
-                   a.trimestre,
-                   a.valor_bruta,
-                   a.criado_em
-            FROM resultados_envio_lote r
-            LEFT JOIN envio_lote_audit a
-                   ON a.lote_id = r.lote_id
-                  AND a.dry_run = 0
-            WHERE r.lote_id = %s
-        """
+        # Rastreabilidade e por OPERACAO (o que ESTE lote confirmou no
+        # iScholar), nao por estado vigente — por isso le envio_lote_audit
+        # direto, e nao vw_notas_confirmadas: a view omitiria notas deste lote
+        # ja supersedidas por reenvio em lote posterior, divergindo de
+        # quantidade_enviada. Dedup nao se aplica dentro de um lote
+        # (UNIQUE (lote_id, item_key)).
+        #
+        # Filtro status='enviado' AND dry_run=0 aplicado no SELECT: corrige o
+        # vazamento de itens erro_envio/erro_resolucao da versao anterior.
+        # Escolhido FILTRAR (em vez de expor o campo status por item) para a
+        # premissa "apenas notas reais confirmadas" valer uniformemente nos 3
+        # endpoints; falhas do lote ja sao visiveis via status_lote e pela
+        # diferenca entre quantidade_enviada e total_notas.
+        try:
+            limit, offset = _lumni_paginacao()
+        except ValueError:
+            return jsonify({"error": "invalid_pagination"}), 400
+
+        sql_lote = (
+            "SELECT status AS status_lote, quantidade_enviada"
+            "  FROM resultados_envio_lote WHERE lote_id = %s"
+        )
+        sql_total = (
+            "SELECT COUNT(*) AS total_notas FROM envio_lote_audit"
+            " WHERE lote_id = %s AND status = 'enviado' AND dry_run = 0"
+        )
+        sql_pagina = (
+            "SELECT id_matricula, estudante, componente, disciplina,"
+            "       trimestre, valor_bruta, criado_em"
+            "  FROM envio_lote_audit"
+            " WHERE lote_id = %s AND status = 'enviado' AND dry_run = 0"
+            " ORDER BY id_matricula, trimestre, componente"
+            " LIMIT %s OFFSET %s"
+        )
         try:
             with get_connection() as conn:
                 with conn.cursor() as cur:
-                    cur.execute(sql, [lote_id])
+                    cur.execute(sql_lote, [lote_id])
+                    lote = cur.fetchone()
+                    if lote is None:
+                        return jsonify({"error": "not_found"}), 404
+                    cur.execute(sql_total, [lote_id])
+                    total_notas = int(cur.fetchone()["total_notas"] or 0)
+                    cur.execute(sql_pagina, [lote_id, limit, offset])
                     rows = cur.fetchall()
         except Exception:
             log.exception("Erro ao consultar notas do lote | lote_id=%s", lote_id)
             return jsonify({"error": "internal_server_error"}), 500
 
-        if not rows:
-            return jsonify({"error": "not_found"}), 404
-
-        status_lote = rows[0]["status_lote"]
-        quantidade_enviada = rows[0]["quantidade_enviada"]
+        # Lote existente sem nota confirmada (ex.: todos os itens com erro)
+        # NAO e 404: o lote existe e status_lote/total_notas=0 contam a
+        # historia. 404 fica reservado a lote_id desconhecido.
         notas = [
             {
                 "id_matricula": r["id_matricula"],
@@ -1435,17 +1559,18 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
                 "componente": r["componente"],
                 "disciplina": r["disciplina"],
                 "trimestre": r["trimestre"],
-                "valor": r["valor_bruta"],
+                "valor": _lumni_valor_nota(r["valor_bruta"]),
                 "enviado_em": r["criado_em"],
             }
             for r in rows
-            if r["id_matricula"] is not None
         ]
         return jsonify(
             {
                 "lote_id": lote_id,
-                "status_lote": status_lote,
-                "quantidade_enviada": quantidade_enviada,
+                "status_lote": lote["status_lote"],
+                "quantidade_enviada": lote["quantidade_enviada"],
+                "total_notas": total_notas,
+                "paginacao": {"limit": limit, "offset": offset, "total": total_notas},
                 "notas": notas,
             }
         ), 200
@@ -1456,6 +1581,8 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
     # Gerar LUMNI_API_KEY:
     #   python -c "import secrets; print(secrets.token_urlsafe(32))"
     #   → adicionar como variável de ambiente no serviço madan-etl-ischolar no Railway
+    #   Rotação sem downtime: definir a chave nova em LUMNI_API_KEY_NEXT,
+    #   aguardar o Guru migrar, promover para LUMNI_API_KEY e remover a _NEXT.
     #
     # Health (público):
     #   curl https://<host>/api/v1/health
@@ -1466,13 +1593,14 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> Flask:
     #   curl -H "Authorization: Bearer $LUMNI_API_KEY" \
     #        "https://<host>/api/v1/notas/aluno/1234?trimestre=T1&componente=AV1"
     #
-    # Notas de uma turma/disciplina:
+    # Notas de uma disciplina (paginado; ?limit= máx. 500, default 100):
     #   curl -H "Authorization: Bearer $LUMNI_API_KEY" \
-    #        "https://<host>/api/v1/notas/turma/42"
+    #        "https://<host>/api/v1/notas/disciplina/42"
     #   curl -H "Authorization: Bearer $LUMNI_API_KEY" \
-    #        "https://<host>/api/v1/notas/turma/42?trimestre=T2"
+    #        "https://<host>/api/v1/notas/disciplina/42?trimestre=T2&limit=200&offset=200"
+    #   (rota /api/v1/notas/turma/42 é alias DEPRECATED da mesma consulta)
     #
-    # Notas de um lote:
+    # Notas de um lote (paginado):
     #   curl -H "Authorization: Bearer $LUMNI_API_KEY" \
     #        "https://<host>/api/v1/notas/lote/<lote_id>"
     # ------------------------------------------------------------------
