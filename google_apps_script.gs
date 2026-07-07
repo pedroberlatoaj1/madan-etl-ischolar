@@ -123,9 +123,9 @@ function executarFluxoValidacao_() {
     var assuntoValidacao =
       "[Madan ETL] Lote " +
       turmaTrimestre +
-      " validado \u2014 " +
+      " validado \u2014 AGUARDANDO APROVACAO (" +
       valorOuZero_(resumoValidacao.total_sendaveis) +
-      " envios prontos";
+      " itens prontos, nada enviado ainda)";
     var corpoValidacao = montarHtmlNotificacaoValidacao_(validacao, aba);
     notificarEventoLote_(
       validacao.lote_id || payload.lote_id || "",
@@ -223,6 +223,10 @@ function executarFluxoAprovacao_(dryRun) {
 
     var aprovador = solicitarIdentidadeAprovador_(dryRun);
     if (!aprovador) {
+      mostrarDialogoTexto_(
+        "Operacao cancelada",
+        "NADA foi enviado: a identificacao do aprovador foi cancelada."
+      );
       return;
     }
 
@@ -310,6 +314,12 @@ function executarFluxoAppsScript_(dryRun) {
 
     var aprovador = solicitarIdentidadeAprovador_(dryRun);
     if (!aprovador) {
+      mostrarDialogoTexto_(
+        dryRun ? "Simulacao cancelada" : "Envio cancelado",
+        "NADA foi enviado ao iScholar: a identificacao do aprovador foi cancelada.\n\n" +
+        "Para concluir, rode 'iScholar ETL > Aprovar e Enviar' novamente e " +
+        "informe o aprovador clicando em OK."
+      );
       return;
     }
 
@@ -894,6 +904,8 @@ function montarHtmlNotificacaoValidacao_(validacao, aba) {
   return [
     '<div style="font-family:Arial,sans-serif;font-size:13px;color:#202124;">',
     "<p>Validacao concluida para o lote <b>" + escaparHtml_(dados.lote_id || "-") + "</b>.</p>",
+    '<p style="color:#b00020;"><b>Nenhuma nota foi enviada ainda.</b> ' +
+      "Para enviar, use o menu 'iScholar ETL &gt; Aprovar e Enviar'.</p>",
     tabela,
     (linkAba
       ? '<p><a href="' + escaparHtmlAtributo_(linkAba) + '">Abrir aba da planilha</a></p>'
@@ -1377,6 +1389,12 @@ function montarTextoValidacao_(validacao) {
   anexarListaLimitada_(linhas, "Avisos", validacao.avisos, 8);
   anexarListaLimitada_(linhas, "Pendencias", validacao.pendencias, 8);
   anexarListaLimitada_(linhas, "Erros", validacao.erros, 8);
+
+  if (validacao.pode_aprovar) {
+    linhas.push("");
+    linhas.push("IMPORTANTE: nenhuma nota foi enviada ainda.");
+    linhas.push("Para enviar, use o menu 'iScholar ETL > Aprovar e Enviar'.");
+  }
 
   if (!validacao.finalizado) {
     linhas.push("");
