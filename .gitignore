@@ -18,6 +18,7 @@ __pycache__/
 # Diretórios de execução temporária / experimentos do Codex
 tmp_*/
 tmp_pytest_*/
+.pytest_tmp_*/
 codex_manual_tmp*/
 codex_*_tmp/
 
