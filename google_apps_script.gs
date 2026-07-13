@@ -20,12 +20,15 @@
 // ATENÇÃO — diferença entre arquivo versionado e instância implantada:
 //
 // Este arquivo mantém PLACEHOLDERS por segurança.
-// Os valores reais são inseridos manualmente na instância implantada no Google Sheets
-// (Extensões > Apps Script) a cada sessão de uso.
+// Os valores reais vivem apenas na instância implantada no Google Sheets
+// (Extensões > Apps Script) e são estáveis — não mudam entre deploys.
 //
 // Campos que devem ser preenchidos manualmente na instância implantada:
-//   API_BASE_URL    → URL pública HTTPS do túnel ngrok (muda a cada reinício)
-//   WEBHOOK_SECRET  → valor do campo WEBHOOK_SECRET no arquivo .env do backend
+//   API_BASE_URL    → URL pública do serviço no Railway (fixa)
+//   WEBHOOK_SECRET  → valor da variável WEBHOOK_SECRET do serviço no Railway
+//
+// Ao colar uma versão nova deste arquivo na instância, PRESERVE os dois
+// valores reais que já estão lá — os deste repositório são placeholders.
 //
 // Nota — Plano B (workbook anual multi-aba):
 //   O script usa SEMPRE a aba ativa no momento do clique. Não há mais constante

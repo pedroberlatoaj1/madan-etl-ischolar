@@ -16,8 +16,8 @@ template wide por turma → professor preenche → auto-detecção de formato
 > Componentes de monitoramento, webhook e worker legados podem continuar no
 > repositório por compatibilidade ou transição, mas **não são a rota oficial principal**.
 >
-> Para operação do dia a dia, deploy e resposta a incidentes, consulte também
-> `docs/OPERACAO.md`.
+> Para operação do dia a dia consulte `docs/runbook_operador.md`; para
+> deploy, `DEPLOY.md`.
 >
 > O README não substitui:
 > - o contrato efetivo do código;
@@ -728,8 +728,8 @@ O backend continua dono do processo:
 - persiste validacao e resultado consolidado do envio;
 - expoe o estado consultavel para polling do operador.
 
-Consulte o guia operacional em `operacao_google_sheets.md` e o runbook
-operacional em `docs/OPERACAO.md`.
+Consulte o runbook do operador em `docs/runbook_operador.md`. Os guias da
+era VPS/ngrok estão preservados em `docs/arquivo/` apenas como histórico.
 
 ## 17. Contingencia
 
@@ -742,119 +742,31 @@ O CLI continua suportado como rota de contingência operacional e usa o mesmo ru
 
 ## 18. Deploy
 
-Na VPS, o deploy deve passar sempre por `deploy.sh` para garantir o fluxo completo no mesmo comando:
+Produção roda no **Railway** (serviço web + worker + Postgres gerenciado), que
+builda a branch `main` automaticamente a cada push/merge.
 
-- `git fetch` com revisao dos commits que vao entrar;
-- confirmacao explicita do operador;
-- `git pull --ff-only`;
-- limpeza de `__pycache__` e `*.pyc`;
-- restart de `madan-webhook` e `madan-worker`;
-- validacao final do import de `validacao_pre_envio`.
+1. Mergear o PR em `main` no GitHub
+2. Acompanhar o build no painel do Railway (Deployments)
+3. Verificar `GET /status` do serviço após o deploy
 
-### 18.1 Comandos
+Passo manual que o Railway NÃO cobre: mudanças em `google_apps_script.gs`
+precisam ser coladas na instância da planilha (Extensões > Apps Script),
+preservando `API_BASE_URL` e `WEBHOOK_SECRET` reais da instância.
 
-1. Local: `git push`
-2. VPS: `ssh madan@vps` e depois `madan-deploy`
-3. Verificar: `madan-status`
+Guia completo de provisionamento: `DEPLOY.md`.
 
-### 18.2 Aliases sugeridos para `~/.bashrc`
+## 19. Dados e Disaster Recovery
 
-```bash
-alias madan-deploy='/opt/madan-etl/app/deploy.sh'
-alias madan-status='systemctl status madan-webhook madan-worker --no-pager | head -20'
-alias madan-logs='sudo journalctl -u madan-worker -u madan-webhook -f'
-```
+- **Postgres (Railway)**: jobs, validações, aprovações, `envio_lote_audit`,
+  resultados de envio — backup conforme plano do Railway.
+- **Snapshots de payload**: Cloudflare R2 (`snapshots/<job_id>.json`),
+  com lifecycle rule própria do bucket.
+- **Mapas** (`mapa_*.json`): versionados neste repositório — o histórico do
+  git é o backup.
+- A auditoria `envio_lote_audit` é a fonte de verdade do que foi enviado;
+  o iScholar é o destino final. Em caso de perda do Postgres, o estado das
+  notas permanece íntegro no iScholar e os snapshots no R2 permitem
+  reprocessamento.
 
-## 19. Disaster Recovery
-
-O historico operacional da VPS fica em `/opt/madan-etl/data` e precisa de backup
-diario. Isso inclui:
-
-- `jobs.sqlite3`
-- `validacoes_lote.db`
-- `aprovacoes_lote.db`
-- `lote_itens.db`
-- `envio_lote_audit.db`
-- `resultados_envio_lote.db`
-- `snapshots/`
-- mapas `mapa*.json` em `/opt/madan-etl/app`
-
-O script oficial de backup fica em `/opt/madan-etl/scripts/backup.sh` e usa:
-
-- `sqlite3 .backup` para gerar copias consistentes dos bancos SQLite abertos
-- `tar.gz` com nome `madan-backup-YYYY-MM-DD-HHMMSS.tar.gz`
-- destino local `/opt/madan-etl/backups/`
-- upload remoto via `rclone` para Google Drive
-- retencao simples de 14 backups locais e 14 remotos
-
-### 19.1 Setup unico na VPS
-
-Como o cron roda em `root` (`sudo crontab -e`), configure o `rclone` tambem com `sudo`:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y rclone sqlite3 mailutils
-sudo rclone config
-sudo rclone mkdir gdrive:madan-etl-backups
-sudo mkdir -p /opt/madan-etl/scripts /opt/madan-etl/backups
-sudo touch /var/log/madan-backup.log
-```
-
-Recomendacao:
-
-- criar o remote com nome `gdrive`
-- usar a pasta remota `gdrive:madan-etl-backups`
-- manter um MTA funcional para que `mail` ou `sendmail` consigam avisar falhas por email
-
-### 19.2 Cron diario
-
-Adicione no `sudo crontab -e`:
-
-```cron
-MAILTO=pedroberlatoaj1@gmail.com
-0 3 * * * /opt/madan-etl/scripts/backup.sh >> /var/log/madan-backup.log 2>&1
-```
-
-Observacoes:
-
-- o log fica em `/var/log/madan-backup.log`
-- o script tenta enviar notificacao por email em falha usando `mail` ou `sendmail`
-- falha de upload remoto nao apaga o `.tar.gz` local ja criado
-
-### 19.3 Restore em producao
-
-O restore oficial fica em `/opt/madan-etl/scripts/restore.sh` e:
-
-- exige um argumento com o caminho do `.tar.gz`
-- pede confirmacao explicita `yes`
-- para `madan-webhook` e `madan-worker`
-- restaura `/opt/madan-etl/data`
-- restaura os mapas `mapa*.json` em `/opt/madan-etl/app`
-- sobe os servicos novamente
-
-Exemplo:
-
-```bash
-sudo /opt/madan-etl/scripts/restore.sh /opt/madan-etl/backups/madan-backup-2026-04-19-030000.tar.gz
-```
-
-### 19.4 Teste trimestral de restore
-
-Uma vez por trimestre, valide um backup sem tocar no ambiente em producao:
-
-```bash
-LATEST_BACKUP="$(ls -1 /opt/madan-etl/backups/madan-backup-*.tar.gz | tail -n 1)"
-TMP_RESTORE_DIR="/tmp/madan-restore-check"
-rm -rf "$TMP_RESTORE_DIR"
-mkdir -p "$TMP_RESTORE_DIR"
-tar -xzf "$LATEST_BACKUP" -C "$TMP_RESTORE_DIR"
-sqlite3 "$TMP_RESTORE_DIR/data/jobs.sqlite3" "SELECT COUNT(*) AS total_jobs FROM jobs;"
-find "$TMP_RESTORE_DIR/data/snapshots" -maxdepth 1 -type f | wc -l
-```
-
-Registrar no teste:
-
-- nome do arquivo restaurado
-- contagem de jobs em `jobs.sqlite3`
-- contagem de snapshots restaurados
-- hora do teste e responsavel
+> O runbook de backup/restore da era VPS (rclone, cron, systemd) foi
+> arquivado em `docs/arquivo/OPERACAO-vps-2026-04.md` e não se aplica mais.
