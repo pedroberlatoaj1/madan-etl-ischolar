@@ -1,3 +1,7 @@
+> **[ARQUIVO HISTÓRICO — DESATUALIZADO]** Este documento descreve a operação da era
+> VPS/ngrok (abril/2026) e NÃO reflete a produção atual (Railway + Apps Script).
+> Guia vigente: `docs/runbook_operador.md`. Deploy vigente: `DEPLOY.md`.
+
 # Operacao via Google Sheets
 
 Este projeto suporta um fluxo operacional sem terminal para o operador final.
