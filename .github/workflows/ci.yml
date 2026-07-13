@@ -5,10 +5,12 @@
 #                 que 73 arquivos de teste entraram no repo sem ninguém notar).
 #   2. testes   — roda o subconjunto VERDE da suíte (349 testes em 2026-07-10).
 #
-# Os --ignore abaixo são o DÉBITO CONHECIDO da suíte: 14 arquivos com falhas
-# (109 testes), a maioria por dependência de DATABASE_URL/Postgres ou por
-# estarem desatualizados frente a mudanças deliberadas (regra AV3, troca de
-# professores, migração Postgres). Consertar um arquivo = apagar a linha dele
+# Os --ignore abaixo são o DÉBITO CONHECIDO da suíte: 15 arquivos ignorados —
+# 14 com falhas de teste (109 testes), a maioria por dependência de
+# DATABASE_URL/Postgres ou por estarem desatualizados frente a mudanças
+# deliberadas (regra AV3, troca de professores, migração Postgres), e 1
+# (test_snapshot_store.py) com erro de importação: usa API removida na
+# migração para o Cloudflare R2. Consertar um arquivo = apagar a linha dele
 # daqui. NÃO adicione novos --ignore para "passar o CI" — conserte o teste.
 name: CI
 

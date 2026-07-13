@@ -63,7 +63,7 @@ iScholar. Use sempre que não tiver certeza.
 | `Coluna 'X' nao reconhecida ... seriam DESCARTADAS` | Cabeçalho fora do padrão | Corrigir o cabeçalho para `Disciplina - Professor (Frente X) - Tipo` antes de aprovar |
 | `RA nao encontrado via pega_alunos` | Aluno sem matrícula ativa naquela turma no iScholar (ex-aluno ou cadastro pendente) | Avisar a coordenação; as demais notas seguem normalmente |
 | `Erros de envio: N` | O iScholar rejeitou N notas | Avisar o desenvolvedor com o print do resultado |
-| `NADA foi enviado: a identificacao do aprovador foi cancelada` | Você cancelou o prompt do aprovador | Repetir Aprovar e Enviar e preencher o nome |
+| `NADA foi enviado ao iScholar: a identificacao do aprovador foi cancelada` | Você cancelou o prompt do aprovador | Repetir Aprovar e Enviar e preencher o nome |
 
 ---
 
