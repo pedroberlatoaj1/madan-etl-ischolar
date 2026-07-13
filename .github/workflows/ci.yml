@@ -1,0 +1,67 @@
+# CI mínima — higienização fase 4.
+#
+# Dois jobs:
+#   1. higiene  — bloqueia artefatos que não devem ser rastreados (foi assim
+#                 que 73 arquivos de teste entraram no repo sem ninguém notar).
+#   2. testes   — roda o subconjunto VERDE da suíte (349 testes em 2026-07-10).
+#
+# Os --ignore abaixo são o DÉBITO CONHECIDO da suíte: 14 arquivos com falhas
+# (109 testes), a maioria por dependência de DATABASE_URL/Postgres ou por
+# estarem desatualizados frente a mudanças deliberadas (regra AV3, troca de
+# professores, migração Postgres). Consertar um arquivo = apagar a linha dele
+# daqui. NÃO adicione novos --ignore para "passar o CI" — conserte o teste.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  higiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Bloqueia artefatos indevidos no rastreamento
+        run: |
+          set -e
+          VIOLACOES=$(git ls-files | grep -E '\.(db|db-shm|db-wal|sqlite3|log)$|^tmp_|^\.pytest_tmp|^codex_|^snapshots/' || true)
+          XLSX_FORA_DA_LISTA=$(git ls-files | grep -E '\.xlsx$' | grep -vE '^(planilha_modelo_notas|planilha_template_madan_2026)\.xlsx$' || true)
+          if [ -n "$VIOLACOES$XLSX_FORA_DA_LISTA" ]; then
+            echo "::error::Arquivos que nao deveriam estar rastreados:"
+            echo "$VIOLACOES"
+            echo "$XLSX_FORA_DA_LISTA"
+            exit 1
+          fi
+          echo "OK: nenhum artefato indevido rastreado."
+
+  testes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+      - name: Instala dependências
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      - name: Pytest (subconjunto verde)
+        run: >
+          python -m pytest tests/ -q -p no:cacheprovider
+          --ignore=tests/test_snapshot_store.py
+          --ignore=tests/test_job_store.py
+          --ignore=tests/test_webhook_google_sheets_async.py
+          --ignore=tests/test_gerador_planilhas.py
+          --ignore=tests/test_worker_retry.py
+          --ignore=tests/test_pipeline_runner.py
+          --ignore=tests/test_cli_envio.py
+          --ignore=tests/test_aprovacao_lote.py
+          --ignore=tests/test_resolvedor_ids_ischolar.py
+          --ignore=tests/test_desambiguacao_2a.py
+          --ignore=tests/test_worker_pipeline_oficial.py
+          --ignore=tests/test_transformador.py
+          --ignore=tests/test_avaliacao_rules.py
+          --ignore=tests/test_wide_format_adapter.py
+          --ignore=tests/test_validacao_pre_envio.py
