@@ -43,6 +43,8 @@ const ISCHOLAR_CODIGO_ESCOLA = "madan";
 const PROP_ISCHOLAR_TOKEN = "ISCHOLAR_TOKEN";
 const ISCHOLAR_TAMANHO_LOTE_POST = 45;
 const ISCHOLAR_TEMPO_MAX_MS = 4 * 60 * 1000;
+// Tentativas de fetchAll por bloco antes de cair para o envio item a item.
+const ISCHOLAR_TENTATIVAS_BLOCO = 3;
 const ISCHOLAR_MAX_PAGINAS_ALUNOS = 20;
 const EMAIL_NOTIFICACOES = "pedro.berlato@madan.com.br";
 const EMAIL_BCC = "pedroberlatoaj1@gmail.com";
@@ -854,19 +856,15 @@ function executarLancamentosIScholar_(pacote, mapaMatriculas, dryRun, jaEnviados
       return montarRequestLancamento_(entry.item, entry.id_matricula);
     });
 
-    var responses;
-    try {
-      responses = UrlFetchApp.fetchAll(requests);
-    } catch (err) {
-      lote.forEach(function(entry) {
-        resultados.push(resultadoErroEnvio_(entry.item, entry.id_matricula, 0, "Falha em fetchAll: " + err.message, true, null));
-      });
-      continue;
-    }
+    var responses = enviarBlocoIScholarComRetry_(requests);
 
     for (var r = 0; r < responses.length; r++) {
       var resposta = responses[r];
       var entry = lote[r];
+      if (resposta && resposta.erroRede) {
+        resultados.push(resultadoErroEnvio_(entry.item, entry.id_matricula, 0, "Falha de rede ao enviar ao iScholar: " + resposta.erroRede, true, null));
+        continue;
+      }
       var statusCode = resposta.getResponseCode();
       var texto = resposta.getContentText() || "";
       var sucesso = statusCode >= 200 && statusCode < 300;
@@ -878,6 +876,58 @@ function executarLancamentosIScholar_(pacote, mapaMatriculas, dryRun, jaEnviados
     }
   }
   return resultados;
+}
+
+/**
+ * Envia um bloco de lancamentos com UrlFetchApp.fetchAll, resistindo a falhas
+ * de REDE do Apps Script ("Endereco nao disponivel" / "Address unavailable").
+ *
+ * fetchAll lanca excecao se QUALQUER request do bloco falhar na rede, e antes
+ * o bloco inteiro (45 notas) virava erro. Agora:
+ *   1. repete o fetchAll do bloco ate ISCHOLAR_TENTATIVAS_BLOCO vezes (espera 2s, 4s);
+ *   2. se ainda falhar, envia item a item, para isolar a falha so nos itens afetados.
+ *
+ * Reenvio: quando fetchAll lanca, parte do bloco pode ter chegado ao iScholar.
+ * Repetir regrava o MESMO valor da planilha na mesma matricula/avaliacao — o
+ * lanca_nota grava por cima, entao o resultado final e o mesmo.
+ *
+ * Retorna um array alinhado com `requests`: HTTPResponse, ou {erroRede: "<msg>"}.
+ */
+function enviarBlocoIScholarComRetry_(requests) {
+  var ultimoErro = null;
+  for (var tentativa = 1; tentativa <= ISCHOLAR_TENTATIVAS_BLOCO; tentativa++) {
+    try {
+      var responses = UrlFetchApp.fetchAll(requests);
+      if (tentativa > 1) {
+        Logger.log("[envio] bloco de " + requests.length + " recuperado na tentativa " + tentativa + ".");
+      }
+      return responses;
+    } catch (err) {
+      ultimoErro = err;
+      Logger.log(
+        "[envio] fetchAll falhou (tentativa " + tentativa + "/" + ISCHOLAR_TENTATIVAS_BLOCO +
+        ", " + requests.length + " itens): " + ((err && err.message) ? err.message : String(err))
+      );
+      if (tentativa < ISCHOLAR_TENTATIVAS_BLOCO) {
+        Utilities.sleep(2000 * tentativa);
+      }
+    }
+  }
+
+  // Ultimo recurso: item a item. Uma falha de rede atinge so o proprio item.
+  Logger.log("[envio] enviando bloco item a item apos falhas em fetchAll: " +
+    ((ultimoErro && ultimoErro.message) ? ultimoErro.message : String(ultimoErro)));
+  return requests.map(function(req) {
+    var opcoes = {};
+    Object.keys(req).forEach(function(k) {
+      if (k !== "url") { opcoes[k] = req[k]; }
+    });
+    try {
+      return UrlFetchApp.fetch(req.url, opcoes);
+    } catch (errItem) {
+      return { erroRede: (errItem && errItem.message) ? errItem.message : String(errItem) };
+    }
+  });
 }
 
 function montarRequestLancamento_(item, idMatricula) {
