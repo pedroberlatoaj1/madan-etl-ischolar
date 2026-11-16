@@ -19,38 +19,43 @@
 // ---------------------------------------------------------------------------
 // ATENÇÃO — diferença entre arquivo versionado e instância implantada:
 //
-// Este arquivo mantém PLACEHOLDERS por segurança.
-// Os valores reais vivem apenas na instância implantada no Google Sheets
-// (Extensões > Apps Script) e são estáveis — não mudam entre deploys.
-//
-// Campos que devem ser preenchidos manualmente na instância implantada:
-//   API_BASE_URL    → URL pública do serviço no Railway (fixa)
-//   WEBHOOK_SECRET  → valor da variável WEBHOOK_SECRET do serviço no Railway
-//
-// Ao colar uma versão nova deste arquivo na instância, PRESERVE os dois
-// valores reais que já estão lá — os deste repositório são placeholders.
+// Este arquivo é o espelho da instância implantada na planilha madan_2026_anual
+// (Extensões > Apps Script). O único valor que NÃO pode vir para o repositório é
+// o segredo:
+//   WEBHOOK_SECRET  → valor da variável WEBHOOK_SECRET do serviço no Railway.
+//                     No repositório fica o placeholder; ao colar este arquivo no
+//                     editor, preserve a linha do segredo que já está lá.
 //
 // Nota — Plano B (workbook anual multi-aba):
 //   O script usa SEMPRE a aba ativa no momento do clique. Não há mais constante
 //   NOME_ABA_NOTAS. Navegue até a aba desejada (ex: "2A_T1") ANTES de clicar
 //   em "Validar Lote", "Dry Run" ou "Aprovar e Enviar".
-//   Um diálogo de confirmação exibe o nome da aba a processar antes de prosseguir.
+//   "Aprovar e Enviar" / "Dry Run" exigem que a aba aberta seja a MESMA do último
+//   "Validar Lote" do usuário — senão bloqueiam sem enviar nada.
 //
 // Qualquer mudança ESTRUTURAL neste arquivo (nova função, novo endpoint, nova lógica)
 // deve ser refletida no repositório. Valores sensíveis nunca devem ser commitados.
 // ---------------------------------------------------------------------------
-const API_BASE_URL = "https://sua-api.com";
+const API_BASE_URL = "https://madan-etl-ischolar-production.up.railway.app";
 const WEBHOOK_SECRET = "troque_por_um_segredo_forte_em_producao";
 const ISCHOLAR_API_BASE_URL = "https://api.ischolar.app";
 const ISCHOLAR_CODIGO_ESCOLA = "madan";
 const PROP_ISCHOLAR_TOKEN = "ISCHOLAR_TOKEN";
-const ISCHOLAR_TAMANHO_LOTE_POST = 25;
+const ISCHOLAR_TAMANHO_LOTE_POST = 45;
 const ISCHOLAR_TEMPO_MAX_MS = 4 * 60 * 1000;
+// Tentativas de fetchAll por bloco antes de cair para o envio item a item.
+const ISCHOLAR_TENTATIVAS_BLOCO = 3;
 const ISCHOLAR_MAX_PAGINAS_ALUNOS = 20;
-const EMAIL_NOTIFICACOES = "marina@madan.com.br";
+const EMAIL_NOTIFICACOES = "pedro.berlato@madan.com.br";
 const EMAIL_BCC = "pedroberlatoaj1@gmail.com";
 const EMAIL_ALERTA_TOKEN_ISCHOLAR = "pedroberlatoaj1@gmail.com";
 const HABILITAR_NOTIFICACOES = true;
+
+// Tentativas para requisicoes GET ao backend (idempotentes). Cobre falha de rede
+// do UrlFetchApp e respostas transitorias do Railway (429 / 5xx), que antes
+// derrubavam a operacao com "O backend nao respondeu ao health check".
+// POST nunca e repetido automaticamente (poderia duplicar lote/aprovacao).
+const CHAMAR_API_TENTATIVAS_GET = 3;
 
 // Padrão reconhecido como aba trimestral Plano B: ex. "2A_T1", "1B_T3"
 var REGEX_ABA_PLANO_B = /^([1-9][A-Za-z])_(T[123])$/i;
@@ -126,7 +131,7 @@ function executarFluxoValidacao_() {
     var assuntoValidacao =
       "[Madan ETL] Lote " +
       turmaTrimestre +
-      " validado \u2014 AGUARDANDO APROVACAO (" +
+      " validado — AGUARDANDO APROVACAO (" +
       valorOuZero_(resumoValidacao.total_sendaveis) +
       " itens prontos, nada enviado ainda)";
     var corpoValidacao = montarHtmlNotificacaoValidacao_(validacao, aba);
@@ -206,16 +211,15 @@ function executarFluxoAprovacao_(dryRun) {
   executarAcaoComTratamento_(function() {
     garantirBackendDisponivel_(dryRun ? "simular o envio" : "aprovar e enviar");
     var estado = carregarEstadoLocal_();
-    if (!estado.lote_id) {
-      throw new Error("Nenhum lote validado localmente. Rode 'Validar Lote' antes de aprovar.");
-    }
+    var abaAtiva = obterAbaAtiva_();
+    garantirLoteDaAbaAtiva_(estado, abaAtiva);
 
     var validacao = consultarValidacaoAtual_(estado.lote_id, false);
     if (!validacao) {
       throw new Error("Nao foi possivel localizar a validacao atual do lote.");
     }
     if (!validacao.pode_aprovar) {
-      throw new Error(validacao.mensagem || "O lote nao esta apto para aprovacao.");
+      throw new Error(mensagemBloqueioAprovacao_(validacao, abaAtiva));
     }
 
     salvarEstadoLocal_({
@@ -236,6 +240,7 @@ function executarFluxoAprovacao_(dryRun) {
     confirmarAcao_(
       dryRun ? "Simular envio?" : "Aprovar e enviar?",
       [
+        "Aba: " + abaAtiva.getName(),
         "Lote: " + validacao.lote_id,
         "Snapshot: " + validacao.snapshot_hash,
         "Aprovador: " + aprovador.aprovado_por,
@@ -272,7 +277,7 @@ function executarFluxoAprovacao_(dryRun) {
     notificarEventoLote_(
       body.lote_id || validacao.lote_id || "",
       dryRun ? "aprovacao_iniciada_dry_run" : "aprovacao_iniciada_envio_real",
-      "[Madan ETL] Lote aprovado \u2014 iniciando envio",
+      "[Madan ETL] Lote aprovado — iniciando envio",
       montarHtmlNotificacaoAprovacao_(body.lote_id || validacao.lote_id || "", aprovador, dryRun)
     );
 
@@ -298,9 +303,11 @@ function executarFluxoAppsScript_(dryRun) {
     garantirTokenIScholar_();
 
     var estado = carregarEstadoLocal_();
-    if (!estado.lote_id) {
-      throw new Error("Nenhum lote validado localmente. Rode 'Validar Lote' antes de aprovar.");
-    }
+    // Trava: o envio usa o ULTIMO lote validado pelo usuario (estado local), nao a
+    // aba aberta. Sem esta checagem, clicar "Aprovar e Enviar" na 1B_T3 depois de
+    // ter validado a 1A_T2 enviava a 1A_T2.
+    var abaAtiva = obterAbaAtiva_();
+    garantirLoteDaAbaAtiva_(estado, abaAtiva);
 
     var validacao = consultarValidacaoAtual_(estado.lote_id, false);
     if (!validacao) {
@@ -312,7 +319,7 @@ function executarFluxoAppsScript_(dryRun) {
       ["send_failed", "dry_run_completed", "aguardando_execucao_externa"].indexOf(statusValidacao) >= 0
     );
     if (!validacao.pode_aprovar && !podeRecuperarEnvioAnterior) {
-      throw new Error(validacao.mensagem || "O lote nao esta apto para aprovacao.");
+      throw new Error(mensagemBloqueioAprovacao_(validacao, abaAtiva));
     }
 
     var aprovador = solicitarIdentidadeAprovador_(dryRun);
@@ -329,6 +336,7 @@ function executarFluxoAppsScript_(dryRun) {
     confirmarAcao_(
       dryRun ? "Simular via Apps Script?" : "Aprovar e enviar via Apps Script?",
       [
+        "Aba: " + abaAtiva.getName(),
         "Lote: " + validacao.lote_id,
         "Snapshot: " + validacao.snapshot_hash,
         "Aprovador: " + aprovador.aprovado_por,
@@ -337,7 +345,10 @@ function executarFluxoAppsScript_(dryRun) {
         "A VPS continuara validando e auditando. Apenas a chamada final ao iScholar sairá pelo Apps Script."
       ].join("\n")
     );
-
+    // A aprovacao ZERA o resultado de envio anterior no backend
+    // (aprovar_lote_para_execucao_externa grava total_enviados=0).
+    // Por isso a retomada precisa ler ANTES de aprovar.
+    var jaEnviadosPrevio = dryRun ? {} : itensJaEnviados_(validacao.lote_id);
     var aprovacao = chamarApi_(
       "post",
       "/lote/" + encodeURIComponent(validacao.lote_id) + "/aprovar",
@@ -357,13 +368,13 @@ function executarFluxoAppsScript_(dryRun) {
     notificarEventoLote_(
       validacao.lote_id || "",
       dryRun ? "aprovacao_apps_script_iniciada_dry_run" : "aprovacao_apps_script_iniciada_envio_real",
-      "[Madan ETL] Lote aprovado \u2014 iniciando envio",
+      "[Madan ETL] Lote aprovado — iniciando envio",
       montarHtmlNotificacaoAprovacao_(validacao.lote_id || "", aprovador, dryRun)
     );
 
     var pacote = obterPacoteExecucao_(validacao.lote_id, dryRun);
     var mapaMatriculas = resolverMatriculasPorTurma_(pacote.turma.id_turma);
-    var resultados = executarLancamentosIScholar_(pacote, mapaMatriculas, dryRun);
+    var resultados = executarLancamentosIScholar_(pacote, mapaMatriculas, dryRun, jaEnviadosPrevio);
     var registro = reportarResultadoExecucao_(pacote, resultados, aprovador, dryRun);
     var resultadoFinal = consultarResultadoEnvioAtual_(pacote.lote_id, false) || (registro.send_result || registro);
 
@@ -383,6 +394,53 @@ function executarFluxoAppsScript_(dryRun) {
       montarTextoResultadoEnvio_(resultadoFinal)
     );
   });
+}
+
+/**
+ * Garante que o lote guardado no estado local (ultimo "Validar Lote" do usuario)
+ * e o lote da aba aberta agora. Se nao for, bloqueia ANTES de qualquer envio.
+ */
+function garantirLoteDaAbaAtiva_(estado, abaAtiva) {
+  var nomeAba = abaAtiva.getName();
+  if (!estado.lote_id) {
+    throw new Error(
+      "Nenhum lote validado ainda.\n\n" +
+      "Rode 'iScholar ETL > Validar Lote' na aba " + nomeAba + " antes de aprovar."
+    );
+  }
+  var loteDaAba = construirLoteId_(SpreadsheetApp.getActiveSpreadsheet(), abaAtiva);
+  if (String(estado.lote_id) !== loteDaAba) {
+    throw new Error(
+      "A aba aberta e " + nomeAba + ", mas o ultimo lote que voce validou e da aba " +
+      nomeAbaDoLote_(estado.lote_id) + ".\n\n" +
+      "NADA foi enviado.\n\n" +
+      "Para enviar a " + nomeAba + ": rode 'Validar Lote' nesta aba e, em seguida, 'Aprovar e Enviar'."
+    );
+  }
+}
+
+function nomeAbaDoLote_(loteId) {
+  var partes = String(loteId || "").split("/");
+  return partes[partes.length - 1] || String(loteId || "-");
+}
+
+/**
+ * Mensagem quando o lote nao pode ser aprovado. Para lote ja enviado por
+ * completo, explica o que fazer em vez de "lote ja passou pela fase de envio".
+ */
+function mensagemBloqueioAprovacao_(validacao, abaAtiva) {
+  var status = String(validacao.status || "");
+  var nomeAba = abaAtiva ? abaAtiva.getName() : nomeAbaDoLote_(validacao.lote_id);
+  if (status === "sent") {
+    return (
+      "As notas da aba " + nomeAba + " ja foram enviadas por completo ao iScholar.\n\n" +
+      "Se foram lancadas notas NOVAS na planilha depois desse envio, rode 'Validar Lote' " +
+      "nesta aba e depois 'Aprovar e Enviar'.\n\n" +
+      "Se a validacao continuar mostrando 'Status: sent', a aba nao mudou desde o ultimo " +
+      "envio e nao ha nada novo para enviar."
+    );
+  }
+  return validacao.mensagem || "O lote nao esta apto para aprovacao.";
 }
 
 function executarAcaoComTratamento_(fn) {
@@ -500,50 +558,88 @@ function lerDadosDaAba_(aba) {
 
 function chamarApi_(method, path, body) {
   var url = API_BASE_URL.replace(/\/$/, "") + path;
-  Logger.log("[chamarApi_] " + String(method || "get").toUpperCase() + " " + path);
-  var headers = {
-    "X-Webhook-Secret": WEBHOOK_SECRET,
-    "X-Webhook-Timestamp": String(Math.floor(Date.now() / 1000)),
-    "X-Webhook-Nonce": Utilities.getUuid(),
-    "ngrok-skip-browser-warning": "true"
-  };
+  var metodo = String(method || "get").toLowerCase();
+  Logger.log("[chamarApi_] " + metodo.toUpperCase() + " " + path);
 
-  var opcoes = {
-    method: method,
-    contentType: "application/json",
-    headers: headers,
-    muteHttpExceptions: true
-  };
+  // Retry so em GET (idempotente). POST e enviado uma unica vez: repetir poderia
+  // duplicar validacao/aprovacao no backend.
+  var tentativasMax = (metodo === "get") ? CHAMAR_API_TENTATIVAS_GET : 1;
+  var ultimoErro = null;
 
-  if (body !== undefined && body !== null) {
-    opcoes.payload = JSON.stringify(body);
+  for (var tentativa = 1; tentativa <= tentativasMax; tentativa++) {
+    // Headers recriados a cada tentativa: timestamp e nonce novos evitam
+    // rejeicao por anti-replay no backend.
+    var opcoes = {
+      method: method,
+      contentType: "application/json",
+      headers: {
+        "X-Webhook-Secret": WEBHOOK_SECRET,
+        "X-Webhook-Timestamp": String(Math.floor(Date.now() / 1000)),
+        "X-Webhook-Nonce": Utilities.getUuid(),
+        "ngrok-skip-browser-warning": "true"
+      },
+      muteHttpExceptions: true
+    };
+
+    if (body !== undefined && body !== null) {
+      opcoes.payload = JSON.stringify(body);
+    }
+
+    var resposta;
+    try {
+      resposta = UrlFetchApp.fetch(url, opcoes);
+    } catch (err) {
+      // Falha de REDE (com muteHttpExceptions=true, 4xx/5xx nao lancam).
+      ultimoErro = err;
+      Logger.log(
+        "[chamarApi_] tentativa " + tentativa + "/" + tentativasMax +
+        " FALHOU (rede) | path=" + path +
+        " | causa=" + ((err && err.message) ? err.message : String(err))
+      );
+      if (tentativa < tentativasMax) {
+        Utilities.sleep(1000 * tentativa); // backoff: 1s, 2s
+      }
+      continue;
+    }
+
+    var statusCode = resposta.getResponseCode();
+    var transitorio = statusCode === 429 || statusCode >= 500;
+    if (transitorio && tentativa < tentativasMax) {
+      // Resposta transitoria do Railway/backend: tenta de novo antes de desistir.
+      Logger.log(
+        "[chamarApi_] tentativa " + tentativa + "/" + tentativasMax +
+        " recebeu HTTP " + statusCode + " | path=" + path + " | repetindo"
+      );
+      Utilities.sleep(1000 * tentativa);
+      continue;
+    }
+
+    var texto = resposta.getContentText() || "";
+    var json = null;
+    try {
+      json = texto ? JSON.parse(texto) : null;
+    } catch (err2) {
+      json = null;
+    }
+
+    Logger.log(
+      "[chamarApi_] status=" + statusCode +
+      " | path=" + path +
+      (tentativa > 1 ? " | tentativa " + tentativa : "")
+    );
+
+    return {
+      statusCode: statusCode,
+      text: texto,
+      json: json
+    };
   }
 
-  var resposta;
-  try {
-    resposta = UrlFetchApp.fetch(url, opcoes);
-  } catch (err) {
-    throw new Error("Nao foi possivel conectar ao backend. Verifique a URL, o segredo e se o servidor esta no ar.");
-  }
-
-  var texto = resposta.getContentText() || "";
-  var json = null;
-  try {
-    json = texto ? JSON.parse(texto) : null;
-  } catch (err2) {
-    json = null;
-  }
-
-  Logger.log(
-    "[chamarApi_] status=" + resposta.getResponseCode() +
-    " | path=" + path
+  var causa = (ultimoErro && ultimoErro.message) ? ultimoErro.message : String(ultimoErro);
+  throw new Error(
+    "Nao foi possivel conectar ao backend apos " + tentativasMax + " tentativa(s). " +
+    "Causa: " + causa
   );
-
-  return {
-    statusCode: resposta.getResponseCode(),
-    text: texto,
-    json: json
-  };
 }
 
 function obterPacoteExecucao_(loteId, dryRun) {
@@ -692,7 +788,36 @@ function extrairIdMatricula_(aluno) {
   return null;
 }
 
-function executarLancamentosIScholar_(pacote, mapaMatriculas, dryRun) {
+function resultadoJaEnviado_(item, idMatricula) {
+  var res = resultadoBase_(item, idMatricula);
+  res.status = "enviado";
+  res.status_code = 200;
+  res.mensagem = "Ja enviado em execucao anterior (retomada).";
+  res.resposta_api = null;
+  res.payload_enviado = null;
+  return res;
+}
+
+function itensJaEnviados_(loteId) {
+  if (!loteId) { return {}; }
+  try {
+    var resp = chamarApi_("get", "/lote/" + encodeURIComponent(loteId) + "/resultado-envio");
+    if (resp.statusCode !== 200) { return {}; }
+    var corpo = resp.json || {};
+    var itens = (corpo.resumo && corpo.resumo.itens) || [];
+    var mapa = {}, total = 0;
+    itens.forEach(function (it) {
+      if (it && it.status === "enviado" && it.item_key) { mapa[it.item_key] = true; total++; }
+    });
+    Logger.log("[retomada] " + total + " item(ns) ja enviados serao pulados.");
+    return mapa;
+  } catch (err) {
+    Logger.log("[retomada] indisponivel — enviando tudo.");
+    return {};
+  }
+}
+
+function executarLancamentosIScholar_(pacote, mapaMatriculas, dryRun, jaEnviadosPrevio) {
   var inicio = Date.now();
   var resultados = [];
   var pendentes = [];
@@ -700,7 +825,7 @@ function executarLancamentosIScholar_(pacote, mapaMatriculas, dryRun) {
   (pacote.itens_com_erro_local || []).forEach(function(item) {
     resultados.push(resultadoErroResolucao_(item, (item.erros || []).join("; ") || "Item com erro local no pacote de execucao."));
   });
-
+  var jaEnviados = dryRun ? {} : (jaEnviadosPrevio || itensJaEnviados_(pacote.lote_id));
   lancamentos.forEach(function(item) {
     var idMatricula = mapaMatriculas[String(item.ra || "").trim()];
     if (!idMatricula) {
@@ -711,13 +836,17 @@ function executarLancamentosIScholar_(pacote, mapaMatriculas, dryRun) {
       resultados.push(resultadoDryRun_(item, idMatricula));
       return;
     }
+    if (item.item_key && jaEnviados[item.item_key]) {
+      resultados.push(resultadoJaEnviado_(item, idMatricula));
+      return;
+    }
     pendentes.push({ item: item, id_matricula: idMatricula });
   });
 
   for (var i = 0; i < pendentes.length; i += ISCHOLAR_TAMANHO_LOTE_POST) {
     if ((Date.now() - inicio) > ISCHOLAR_TEMPO_MAX_MS) {
       for (var restante = i; restante < pendentes.length; restante++) {
-        resultados.push(resultadoErroEnvio_(pendentes[restante].item, pendentes[restante].id_matricula, 0, "Tempo limite do Apps Script atingido.", true, null));
+        resultados.push(resultadoErroEnvio_(pendentes[restante].item, pendentes[restante].id_matricula, 0, "Tempo limite do Apps Script atingido. Rode 'Aprovar e Enviar' novamente: o envio retoma de onde parou.", true, null));
       }
       break;
     }
@@ -727,19 +856,15 @@ function executarLancamentosIScholar_(pacote, mapaMatriculas, dryRun) {
       return montarRequestLancamento_(entry.item, entry.id_matricula);
     });
 
-    var responses;
-    try {
-      responses = UrlFetchApp.fetchAll(requests);
-    } catch (err) {
-      lote.forEach(function(entry) {
-        resultados.push(resultadoErroEnvio_(entry.item, entry.id_matricula, 0, "Falha em fetchAll: " + err.message, true, null));
-      });
-      continue;
-    }
+    var responses = enviarBlocoIScholarComRetry_(requests);
 
     for (var r = 0; r < responses.length; r++) {
       var resposta = responses[r];
       var entry = lote[r];
+      if (resposta && resposta.erroRede) {
+        resultados.push(resultadoErroEnvio_(entry.item, entry.id_matricula, 0, "Falha de rede ao enviar ao iScholar: " + resposta.erroRede, true, null));
+        continue;
+      }
       var statusCode = resposta.getResponseCode();
       var texto = resposta.getContentText() || "";
       var sucesso = statusCode >= 200 && statusCode < 300;
@@ -751,6 +876,58 @@ function executarLancamentosIScholar_(pacote, mapaMatriculas, dryRun) {
     }
   }
   return resultados;
+}
+
+/**
+ * Envia um bloco de lancamentos com UrlFetchApp.fetchAll, resistindo a falhas
+ * de REDE do Apps Script ("Endereco nao disponivel" / "Address unavailable").
+ *
+ * fetchAll lanca excecao se QUALQUER request do bloco falhar na rede, e antes
+ * o bloco inteiro (45 notas) virava erro. Agora:
+ *   1. repete o fetchAll do bloco ate ISCHOLAR_TENTATIVAS_BLOCO vezes (espera 2s, 4s);
+ *   2. se ainda falhar, envia item a item, para isolar a falha so nos itens afetados.
+ *
+ * Reenvio: quando fetchAll lanca, parte do bloco pode ter chegado ao iScholar.
+ * Repetir regrava o MESMO valor da planilha na mesma matricula/avaliacao — o
+ * lanca_nota grava por cima, entao o resultado final e o mesmo.
+ *
+ * Retorna um array alinhado com `requests`: HTTPResponse, ou {erroRede: "<msg>"}.
+ */
+function enviarBlocoIScholarComRetry_(requests) {
+  var ultimoErro = null;
+  for (var tentativa = 1; tentativa <= ISCHOLAR_TENTATIVAS_BLOCO; tentativa++) {
+    try {
+      var responses = UrlFetchApp.fetchAll(requests);
+      if (tentativa > 1) {
+        Logger.log("[envio] bloco de " + requests.length + " recuperado na tentativa " + tentativa + ".");
+      }
+      return responses;
+    } catch (err) {
+      ultimoErro = err;
+      Logger.log(
+        "[envio] fetchAll falhou (tentativa " + tentativa + "/" + ISCHOLAR_TENTATIVAS_BLOCO +
+        ", " + requests.length + " itens): " + ((err && err.message) ? err.message : String(err))
+      );
+      if (tentativa < ISCHOLAR_TENTATIVAS_BLOCO) {
+        Utilities.sleep(2000 * tentativa);
+      }
+    }
+  }
+
+  // Ultimo recurso: item a item. Uma falha de rede atinge so o proprio item.
+  Logger.log("[envio] enviando bloco item a item apos falhas em fetchAll: " +
+    ((ultimoErro && ultimoErro.message) ? ultimoErro.message : String(ultimoErro)));
+  return requests.map(function(req) {
+    var opcoes = {};
+    Object.keys(req).forEach(function(k) {
+      if (k !== "url") { opcoes[k] = req[k]; }
+    });
+    try {
+      return UrlFetchApp.fetch(req.url, opcoes);
+    } catch (errItem) {
+      return { erroRede: (errItem && errItem.message) ? errItem.message : String(errItem) };
+    }
+  });
 }
 
 function montarRequestLancamento_(item, idMatricula) {
@@ -878,13 +1055,14 @@ function reportarResultados_(resultado, contexto) {
     var enviados = valorOuZero_(dados.quantidade_enviada);
     var errosHttp = extrairErrosHttpEnvio_(dados);
 
-    var assuntoBase = "[Madan ETL] Envio conclu\u00eddo \u2014 " + enviados + "/" + total;
-    var assunto = errosHttp.length ? ("\u26A0\uFE0F " + assuntoBase) : assuntoBase;
+    var assuntoBase = "[Madan ETL] Envio concluído — " + enviados + "/" + total;
+    var comErro = valorOuZero_(dados.quantidade_com_erro);
+    var assunto = (errosHttp.length || comErro > 0) ? ("⚠️ " + assuntoBase) : assuntoBase;
     var corpo = montarHtmlNotificacaoEnvio_(dados, ctx, errosHttp);
 
     notificarEventoLote_(
       loteId || "sem_lote",
-      dryRun ? "envio_concluido_dry_run" : "envio_concluido_envio_real",
+      (dryRun ? "envio_concluido_dry_run" : "envio_concluido_envio_real") + "_" + enviados + "_" + total,
       assunto,
       corpo
     );
@@ -947,6 +1125,31 @@ function montarHtmlNotificacaoEnvio_(resultado, contexto, errosHttp) {
     ["Erros de envio", valorOuZero_(dados.total_erros_envio)]
   ]);
 
+  // Motivos de TODAS as notas que nao subiram.
+  // errosHttp so captura 4xx/5xx. Timeout usa status_code=0 e erro de
+  // resolucao nao tem HTTP nenhum — por isso eles nunca apareciam no e-mail.
+  var itensRes = (dados.resumo && dados.resumo.itens) || [];
+  var porMsg = {}, totalFalhou = 0;
+  itensRes.forEach(function (it) {
+    if (!it || it.status === "enviado" || it.status === "dry_run") { return; }
+    totalFalhou++;
+    var m = (it.mensagem || "(sem mensagem)").toString();
+    porMsg[m] = (porMsg[m] || 0) + 1;
+  });
+
+  var blocoMotivos = "";
+  if (totalFalhou > 0) {
+    var linhasMotivo = Object.keys(porMsg)
+      .sort(function (a, b) { return porMsg[b] - porMsg[a]; })
+      .map(function (m) {
+        return "<li><b>" + porMsg[m] + "x</b> " + escaparHtml_(m) + "</li>";
+      }).join("");
+    blocoMotivos =
+      '<p style="color:#b00020;font-size:14px;"><b>ATENCAO: ' + totalFalhou +
+      " nota(s) NAO foram lancadas no iScholar.</b></p>" +
+      "<p><b>Motivos:</b></p><ul>" + linhasMotivo + "</ul>";
+  }
+
   var blocoErros = "";
   if (errosHttp && errosHttp.length) {
     var top5 = errosHttp.slice(0, 5);
@@ -961,6 +1164,7 @@ function montarHtmlNotificacaoEnvio_(resultado, contexto, errosHttp) {
   return [
     '<div style="font-family:Arial,sans-serif;font-size:13px;color:#202124;">',
     "<p>Processamento de envio concluido.</p>",
+    blocoMotivos,
     tabela,
     blocoErros,
     (linkAudit
@@ -1228,12 +1432,22 @@ function utilListarTurmas() {
 function garantirBackendDisponivel_(acao) {
   var resposta;
   try {
+    // chamarApi_ ja repete GET em falha de rede e em HTTP 429/5xx.
     resposta = chamarApi_("get", "/health");
   } catch (err) {
-    throw new Error("Nao foi possivel contatar o backend para " + acao + ". Verifique se o servidor esta no ar e tente novamente.");
+    throw new Error(
+      "Nao foi possivel contatar o backend para " + acao + ".\n\n" +
+      mensagemErroHumana_(err) + "\n\n" +
+      "Nada foi enviado. Tente novamente em alguns instantes."
+    );
   }
   if (resposta.statusCode !== 200) {
-    throw new Error("O backend nao respondeu ao health check. Nao foi possivel " + acao + ".");
+    throw new Error(
+      "O backend respondeu HTTP " + resposta.statusCode + " ao health check " +
+      "(apos " + CHAMAR_API_TENTATIVAS_GET + " tentativas). Nao foi possivel " + acao + ".\n\n" +
+      "Resposta: " + limitarTexto_(resposta.text || "(vazia)", 200) + "\n\n" +
+      "Nada foi enviado. Tente novamente em alguns instantes."
+    );
   }
   var body = resposta.json || {};
   if ((body.status || "").toString().toLowerCase() !== "online") {
@@ -1421,6 +1635,24 @@ function montarTextoResultadoEnvio_(resultado) {
     "Erros de envio: " + valorOuZero_(resultado.total_erros_envio)
   ];
 
+  var itensRes = (resultado.resumo && resultado.resumo.itens) || [];
+  var porMsg = {}, totalFalhou = 0;
+  itensRes.forEach(function (it) {
+    if (!it || it.status === "enviado" || it.status === "dry_run") { return; }
+    totalFalhou++;
+    var m = (it.mensagem || "(sem mensagem)").toString();
+    porMsg[m] = (porMsg[m] || 0) + 1;
+  });
+  if (totalFalhou > 0) {
+    linhas.push("");
+    linhas.push("==================================================");
+    linhas.push("ATENCAO: " + totalFalhou + " nota(s) NAO foram lancadas no iScholar.");
+    linhas.push("==================================================");
+    linhas.push("Motivos:");
+    Object.keys(porMsg)
+      .sort(function (a, b) { return porMsg[b] - porMsg[a]; })
+      .forEach(function (m) { linhas.push("  - " + porMsg[m] + "x  " + m); });
+  }
   if (resultado.aprovador) {
     linhas.push("Aprovador: " + (resultado.aprovado_por || "-"));
     linhas.push("Identidade: " + (resultado.aprovador.identity_strength || "desconhecida"));
@@ -1645,7 +1877,7 @@ function verificarTokenIScholar_() {
   var expiracaoFormatada = "";
 
   if (!token) {
-    assunto = "\uD83D\uDEA8 EXPIRADO \u2014 Token iScholar inv\u00E1lido";
+    assunto = "🚨 EXPIRADO — Token iScholar inválido";
     statusResumo = "Token ausente em Script Properties (ISCHOLAR_TOKEN).";
   } else if (expiracao && expiracao.semExpiracao === true) {
     Logger.log(
@@ -1658,7 +1890,7 @@ function verificarTokenIScholar_() {
       observacao: "Token de integracao iScholar emitido sem prazo (exp:null)."
     };
   } else if (!expiracao) {
-    assunto = "[Madan ETL] \u26A0\uFE0F N\u00E3o foi poss\u00EDvel ler expira\u00E7\u00E3o do token iScholar";
+    assunto = "[Madan ETL] ⚠️ Não foi possível ler expiração do token iScholar";
     statusResumo = "Formato do JWT inesperado, sem campo exp valido.";
   } else {
     var diffMs = expiracao.getTime() - agora.getTime();
@@ -1666,15 +1898,15 @@ function verificarTokenIScholar_() {
 
     if (diffMs <= 0) {
       diasRestantes = 0;
-      assunto = "\uD83D\uDEA8 EXPIRADO \u2014 Token iScholar inv\u00E1lido";
+      assunto = "🚨 EXPIRADO — Token iScholar inválido";
       statusResumo = "Token expirado.";
     } else {
       diasRestantes = Math.max(1, Math.floor(diffMs / msDia));
       if (diffMs < 7 * msDia) {
-        assunto = "\uD83D\uDEA8 URGENTE \u2014 Token iScholar expira em " + diasRestantes + " dias";
+        assunto = "🚨 URGENTE — Token iScholar expira em " + diasRestantes + " dias";
         statusResumo = "Token perto do vencimento.";
       } else if (diffMs < 30 * msDia) {
-        assunto = "[Madan ETL] \u26A0\uFE0F Token iScholar expira em " + diasRestantes + " dias";
+        assunto = "[Madan ETL] ⚠️ Token iScholar expira em " + diasRestantes + " dias";
         statusResumo = "Token em janela de alerta (menos de 30 dias).";
       } else {
         Logger.log(
@@ -1842,4 +2074,140 @@ function setupTriggerVerificacaoToken() {
 
 function rodarVerificacaoTokenAgora() {
   return verificarTokenIScholar_();
+}
+
+// ---------------------------------------------------------------------------
+// Diagnostico (rodar manualmente pelo editor). Somente leitura.
+// ---------------------------------------------------------------------------
+
+// Lote usado pelas funcoes de diagnostico. Vazio = ultimo lote validado pelo usuario.
+var LOTE_DIAGNOSTICO = "";
+
+function loteDiagnostico_() {
+  var lote = LOTE_DIAGNOSTICO || carregarEstadoLocal_().lote_id;
+  if (!lote) {
+    throw new Error("Defina LOTE_DIAGNOSTICO (ex: '<spreadsheetId>/1B_T3') ou rode 'Validar Lote' antes.");
+  }
+  Logger.log("LOTE ANALISADO: " + lote);
+  return lote;
+}
+
+function diagnosticarBackend() {
+  var url = API_BASE_URL.replace(/\/$/, "") + "/health";
+
+  // TESTE A — fetch "pelado", SEM nenhum header custom
+  try {
+    var a = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    Logger.log("TESTE A (sem headers): OK — HTTP " + a.getResponseCode() + " — " + a.getContentText());
+  } catch (e) {
+    Logger.log("TESTE A (sem headers): FALHOU — " + e.message);
+  }
+
+  // TESTE B — com os MESMOS headers que o chamarApi_ usa
+  try {
+    var b = UrlFetchApp.fetch(url, {
+      method: "get",
+      contentType: "application/json",
+      headers: {
+        "X-Webhook-Secret": WEBHOOK_SECRET,
+        "X-Webhook-Timestamp": String(Math.floor(Date.now() / 1000)),
+        "X-Webhook-Nonce": Utilities.getUuid(),
+        "ngrok-skip-browser-warning": "true"
+      },
+      muteHttpExceptions: true
+    });
+    Logger.log("TESTE B (com headers): OK — HTTP " + b.getResponseCode() + " — " + b.getContentText());
+  } catch (e) {
+    Logger.log("TESTE B (com headers): FALHOU — " + e.message);
+  }
+
+  // Radiografia do segredo — SEM revelar o valor
+  Logger.log("SEGREDO: tamanho=" + WEBHOOK_SECRET.length
+    + " | tem_quebra_de_linha=" + /[\r\n]/.test(WEBHOOK_SECRET)
+    + " | espaco_nas_pontas=" + (WEBHOOK_SECRET !== WEBHOOK_SECRET.trim())
+    + " | tem_nao_ascii=" + /[^\x20-\x7E]/.test(WEBHOOK_SECRET));
+}
+
+function testarCaminhoReal() {
+  try {
+    var r = chamarApi_("get", "/health");
+    Logger.log("chamarApi_ REAL: OK — status=" + r.statusCode + " — " + r.text);
+  } catch (e) {
+    Logger.log("chamarApi_ REAL: FALHOU — " + e.message);
+  }
+
+  try {
+    garantirBackendDisponivel_("teste");
+    Logger.log("garantirBackendDisponivel_: OK");
+  } catch (e) {
+    Logger.log("garantirBackendDisponivel_: FALHOU — " + e.message);
+  }
+
+  Logger.log("URL montada = " + API_BASE_URL.replace(/\/$/, "") + "/health");
+}
+
+function verErrosDoUltimoEnvio() {
+  var lote = loteDiagnostico_();
+  var r = chamarApi_("get", "/lote/" + encodeURIComponent(lote) + "/resultado-envio");
+  Logger.log((r.text || "").slice(0, 5000));
+}
+
+function resumirErrosDoLote() {
+  var lote = loteDiagnostico_();
+  var r = chamarApi_("get", "/lote/" + encodeURIComponent(lote) + "/resultado-envio");
+  if (r.statusCode !== 200) {
+    Logger.log("HTTP " + r.statusCode + " — sem resultado de envio para o snapshot atual.");
+    return;
+  }
+  var d = r.json || JSON.parse(r.text);
+  var itens = (d.resumo && d.resumo.itens) || [];
+
+  var porStatus = {}, porMsg = {}, alunosTimeout = {};
+  itens.forEach(function (it) {
+    porStatus[it.status] = (porStatus[it.status] || 0) + 1;
+    var m = (it.mensagem || "(sem mensagem)").toString().slice(0, 60);
+    porMsg[m] = (porMsg[m] || 0) + 1;
+    if (m.indexOf("Tempo limite") >= 0) {
+      alunosTimeout[it.estudante] = (alunosTimeout[it.estudante] || 0) + 1;
+    }
+  });
+
+  Logger.log("itens no resumo: " + itens.length);
+  Logger.log("POR STATUS: " + JSON.stringify(porStatus));
+  Logger.log("--- POR MENSAGEM ---");
+  Object.keys(porMsg).sort(function (a, b) { return porMsg[b] - porMsg[a]; })
+    .forEach(function (k) { Logger.log("  " + porMsg[k] + "x  " + k); });
+  Logger.log("--- ALUNOS COM 'Tempo limite' (" +
+             Object.keys(alunosTimeout).length + ") ---");
+  Logger.log(Object.keys(alunosTimeout).sort().join(" | "));
+}
+
+function listarRaNaoEncontrado() {
+  var lote = loteDiagnostico_();
+  var r = chamarApi_("get", "/lote/" + encodeURIComponent(lote) + "/resultado-envio");
+  var itens = ((r.json || {}).resumo || {}).itens || [];
+  var alunos = {};
+  itens.forEach(function (it) {
+    if (it.status === "erro_resolucao") {
+      var k = it.estudante + " | RA " + it.ra;
+      alunos[k] = (alunos[k] || 0) + 1;
+    }
+  });
+  Object.keys(alunos).forEach(function (k) { Logger.log(alunos[k] + " notas -> " + k); });
+}
+
+function conferirRespostasIScholar() {
+  var lote = loteDiagnostico_();
+  var r = chamarApi_("get", "/lote/" + encodeURIComponent(lote) + "/resultado-envio");
+  var itens = ((r.json || {}).resumo || {}).itens || [];
+  var porResposta = {}, exemplos = {};
+  itens.forEach(function (it) {
+    if (it.status !== "enviado") return;
+    var txt = String(it.resposta_api || "(sem resposta - pulado na retomada)");
+    var k = txt.slice(0, 120);
+    porResposta[k] = (porResposta[k] || 0) + 1;
+    if (!exemplos[k]) exemplos[k] = it.estudante;
+  });
+  Object.keys(porResposta).sort(function (a, b) { return porResposta[b] - porResposta[a]; })
+    .forEach(function (k) { Logger.log(porResposta[k] + "x | ex: " + exemplos[k] + " | " + k); });
 }
