@@ -755,8 +755,22 @@ def _mensagem_validacao(status: str, *, apto_para_aprovacao: bool, resumo: dict[
         return "Validacao concluida e o envio esta em processamento."
     if status == STATUS_SEND_RETRY_SCHEDULED:
         return "Validacao concluida. O envio teve falha transitoria e sera tentado novamente."
-    if status in {STATUS_SENT, STATUS_DRY_RUN_COMPLETED, STATUS_SEND_FAILED}:
-        return "Validacao concluida e lote ja passou pela fase de envio."
+    if status == STATUS_SEND_FAILED:
+        return (
+            "Validacao concluida. O ultimo envio desta aba ficou INCOMPLETO: "
+            "clique em 'Aprovar e Enviar' para completar as notas que faltam "
+            "(as ja enviadas sao puladas)."
+        )
+    if status == STATUS_SENT:
+        return (
+            "Validacao concluida. Esta aba ja foi enviada por completo e a planilha "
+            "nao mudou desde entao: nao ha nada novo para enviar."
+        )
+    if status == STATUS_DRY_RUN_COMPLETED:
+        return (
+            "Validacao concluida. A ultima acao nesta aba foi uma simulacao (nada enviado): "
+            "clique em 'Aprovar e Enviar' para enviar de verdade."
+        )
     return f"Status atual da validacao: {status}."
 
 

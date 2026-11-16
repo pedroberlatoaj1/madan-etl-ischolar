@@ -62,6 +62,7 @@ from transformador import linha_madan_para_lancamentos
 from utils.hash_utils import sha256_bytes, sha256_dataframe_normalizado
 from validacao_lote_store import ResultadoValidacaoPersistido, ValidacaoLoteStore
 from resultado_envio_lote_store import ResultadoEnvioLoteStore, ResultadoEnvioPersistido
+from status_execucao_externa import classificar_execucao_externa, eh_aluno_fora_da_turma
 from validacao_pre_envio import (
     STATUS_BLOQUEADO_ERROS,
     validar_pre_envio_linha,
@@ -1236,19 +1237,20 @@ def registrar_resultado_execucao_externa(
         itens_resultado.append(item)
 
     total_sendaveis = len(resultados)
-    sucesso = total_sendaveis > 0 and total_erros_resolucao == 0 and total_erros_envio == 0
-    if total_erros_resolucao or total_erros_envio:
-        status_final = STATUS_SEND_FAILED
-        mensagem_final = (
-            f"execucao externa: {total_enviados + total_dry_run}/{total_sendaveis} "
-            f"processados; {total_erros_resolucao + total_erros_envio} erro(s)."
-        )
-    elif dry_run or total_dry_run == total_sendaveis:
-        status_final = STATUS_DRY_RUN_COMPLETED
-        mensagem_final = f"dry_run externo concluido: {total_dry_run}/{total_sendaveis} item(ns)."
-    else:
-        status_final = STATUS_SENT
-        mensagem_final = f"envio externo concluido: {total_enviados}/{total_sendaveis} item(ns)."
+    # Alunos que sairam da escola seguem na planilha por decisao do Madan e caem
+    # como "RA nao encontrado": contam como erro_resolucao, mas nao reprovam o lote.
+    total_fora_da_turma = sum(
+        1 for item in itens_resultado if eh_aluno_fora_da_turma(item.status, item.mensagem)
+    )
+    status_final, mensagem_final, sucesso = classificar_execucao_externa(
+        total_sendaveis=total_sendaveis,
+        total_enviados=total_enviados,
+        total_dry_run=total_dry_run,
+        total_erros_resolucao=total_erros_resolucao,
+        total_erros_envio=total_erros_envio,
+        total_fora_da_turma=total_fora_da_turma,
+        dry_run=bool(dry_run),
+    )
 
     envio = {
         "lote_id": lote_id,
@@ -1257,6 +1259,7 @@ def registrar_resultado_execucao_externa(
         "total_enviados": total_enviados,
         "total_dry_run": total_dry_run,
         "total_erros_resolucao": total_erros_resolucao,
+        "total_fora_da_turma": total_fora_da_turma,
         "total_erros_envio": total_erros_envio,
         "sucesso": sucesso,
         "mensagem": mensagem_final,
