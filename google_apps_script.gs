@@ -301,6 +301,7 @@ function executarFluxoAppsScript_(dryRun) {
   executarAcaoComTratamento_(function() {
     garantirBackendDisponivel_(dryRun ? "simular via Apps Script" : "aprovar e enviar via Apps Script");
     garantirTokenIScholar_();
+    validarTokenIScholarNaApi_();
 
     var estado = carregarEstadoLocal_();
     // Trava: o envio usa o ULTIMO lote validado pelo usuario (estado local), nao a
@@ -701,6 +702,51 @@ function garantirTokenIScholar_() {
   return token;
 }
 
+/**
+ * Se a resposta do iScholar (texto ou objeto) for um erro de negocio
+ * ({"status":"erro", "msg"/"mensagem": ...}), devolve a mensagem; senao null.
+ */
+function erroNaRespostaIScholar_(resposta) {
+  if (resposta === null || resposta === undefined || resposta === "") {
+    return null;
+  }
+  var corpo = resposta;
+  if (typeof corpo === "string") {
+    try {
+      corpo = JSON.parse(corpo);
+    } catch (err) {
+      return null;
+    }
+  }
+  if (!corpo || typeof corpo !== "object") {
+    return null;
+  }
+  var status = String(corpo.status || "").toLowerCase();
+  if (status !== "erro" && status !== "error") {
+    return null;
+  }
+  return String(corpo.msg || corpo.mensagem || corpo.message || "status de erro sem mensagem");
+}
+
+/**
+ * Confere o ISCHOLAR_TOKEN na API ANTES de enviar. Token invalido faz o
+ * iScholar recusar todas as notas (HTTP 200 + "A verificacao da assinatura falhou").
+ */
+function validarTokenIScholarNaApi_() {
+  var resposta = chamarIScholar_("get", "/turma/lista", null, null);
+  var erro = erroNaRespostaIScholar_(resposta.json || resposta.text);
+  if (resposta.statusCode < 200 || resposta.statusCode >= 300 || erro) {
+    throw new Error(
+      "O iScholar recusou o token da integracao (ISCHOLAR_TOKEN): " +
+      (erro || ("HTTP " + resposta.statusCode)) + "\n\n" +
+      "NADA foi enviado.\n\n" +
+      "Atualize o token: no iScholar, Administracao > Configuracoes > Gerenciar tokens; " +
+      "copie o token e cole em Extensoes > Apps Script > Configuracoes do projeto > " +
+      "Propriedades do script > ISCHOLAR_TOKEN."
+    );
+  }
+}
+
 function montarQueryString_(params) {
   var partes = [];
   Object.keys(params || {}).forEach(function(chave) {
@@ -807,7 +853,11 @@ function itensJaEnviados_(loteId) {
     var itens = (corpo.resumo && corpo.resumo.itens) || [];
     var mapa = {}, total = 0;
     itens.forEach(function (it) {
-      if (it && it.status === "enviado" && it.item_key) { mapa[it.item_key] = true; total++; }
+      // Nao pula item cuja resposta do iScholar foi um erro disfarcado de HTTP 200
+      // (versoes anteriores do script contavam esses itens como "enviado").
+      if (it && it.status === "enviado" && it.item_key && !erroNaRespostaIScholar_(it.resposta_api)) {
+        mapa[it.item_key] = true; total++;
+      }
     });
     Logger.log("[retomada] " + total + " item(ns) ja enviados serao pulados.");
     return mapa;
@@ -868,7 +918,12 @@ function executarLancamentosIScholar_(pacote, mapaMatriculas, dryRun, jaEnviados
       var statusCode = resposta.getResponseCode();
       var texto = resposta.getContentText() || "";
       var sucesso = statusCode >= 200 && statusCode < 300;
-      if (sucesso) {
+      // O iScholar responde HTTP 200 com {"status":"erro",...} quando RECUSA a nota
+      // (ex.: token invalido -> "A verificacao da assinatura falhou"). Nada foi gravado.
+      var erroNegocio = sucesso ? erroNaRespostaIScholar_(texto) : null;
+      if (erroNegocio) {
+        resultados.push(resultadoErroEnvio_(entry.item, entry.id_matricula, statusCode, "iScholar recusou a nota: " + erroNegocio, false, texto));
+      } else if (sucesso) {
         resultados.push(resultadoEnviado_(entry.item, entry.id_matricula, statusCode, texto));
       } else {
         resultados.push(resultadoErroEnvio_(entry.item, entry.id_matricula, statusCode, texto, statusCode === 429 || statusCode >= 500, texto));
@@ -2074,6 +2129,16 @@ function setupTriggerVerificacaoToken() {
 
 function rodarVerificacaoTokenAgora() {
   return verificarTokenIScholar_();
+}
+
+// Rodar pelo editor depois de trocar o ISCHOLAR_TOKEN: confirma se o iScholar aceita o token.
+function testarTokenIScholar() {
+  try {
+    validarTokenIScholarNaApi_();
+    Logger.log("TOKEN OK: o iScholar aceitou o ISCHOLAR_TOKEN.");
+  } catch (e) {
+    Logger.log("TOKEN COM PROBLEMA: " + e.message);
+  }
 }
 
 // ---------------------------------------------------------------------------
